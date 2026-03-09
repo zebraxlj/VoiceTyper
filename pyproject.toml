@@ -1,0 +1,11 @@
+[project]
+name = "voicetyper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "colorama>=0.4.6",
+    "pyaudio>=0.2.14",
+    "speechrecognition>=3.14.6",
+]
