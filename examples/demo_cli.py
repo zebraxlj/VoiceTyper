@@ -16,9 +16,14 @@ def on_request_error_print(e: Exception) -> None:
     print(f"{Fore.RED}无法连接到 Google API: {e}{Style.RESET_ALL}")
 
 
-def on_result_print(text: str) -> None:
+def on_result_print(text: str, is_correction: bool) -> None:
     sys.stdout.write("\033[K")
-    print(f"{Fore.GREEN}结果: {Style.BRIGHT}{text}{Style.RESET_ALL}")
+    if is_correction:
+        # 这里的 \033[A 是光标上移一行，实现“覆盖上一行”的效果
+        # 注意：这在某些 Windows 终端可能不生效，但在标准 ANSI 终端有效
+        print(f"\033[A\033[K{Fore.GREEN}修正结果: {Style.BRIGHT}{text}{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.GREEN}结果: {Style.BRIGHT}{text}{Style.RESET_ALL}")
 
 
 def on_status_print(msg: str) -> None:
@@ -39,7 +44,7 @@ def main() -> None:
     recognizer.pause_threshold = 0.5
     recognizer.non_speaking_duration = 0.3
 
-    print(f"{Fore.CYAN}=== 实时连续语音转文字（Google API）==={Style.RESET_ALL}")
+    print(f"{Fore.CYAN}=== 实时连续语音转文字（Google API + 智能拼接修正）==={Style.RESET_ALL}")
     print(f"{Fore.YELLOW}正在初始化麦克风...{Style.RESET_ALL}")
 
     try:
@@ -58,7 +63,17 @@ def main() -> None:
             recognizer.adjust_for_ambient_noise(source, duration=1)
         print(f"{Fore.GREEN}校准完成!{Style.RESET_ALL}")
 
-        service = BackgroundSTT(recognizer, language="zh-CN", phrase_time_limit=10)
+        # 调整参数：
+        # phrase_time_limit=30: 允许长达30秒的单次语音（防止硬切）
+        # stitch_threshold=1.5: 两段语音间隔1.5秒内尝试拼接
+        # max_stitch_duration=60.0: 最大允许拼接成60秒的长语音
+        service = BackgroundSTT(
+            recognizer,
+            language="zh-CN",
+            phrase_time_limit=30,
+            stitch_threshold=1.5,
+            max_stitch_duration=60.0
+        )
         service.start_listening(mic)
         service.start_worker(
             on_status_print, on_result_print, on_unintelligible_print, on_request_error_print
