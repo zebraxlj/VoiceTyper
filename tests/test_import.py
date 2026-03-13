@@ -8,6 +8,7 @@ import voicetyper
 def test_imports():
     assert hasattr(voicetyper, 'AudioDeviceResolver')
     assert hasattr(voicetyper, 'BackgroundSTT')
+    assert hasattr(voicetyper, 'AsrEngine')
     print("Imports successful!")
 
 
