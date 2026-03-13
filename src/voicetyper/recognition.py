@@ -1,8 +1,27 @@
 import threading
 import time
+from enum import Enum
 from queue import Queue, Empty
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
+
 import speech_recognition as sr
+
+
+class AsrEngine(str, Enum):
+    SENSEVOICE_SMALL = "sensevoice_small"
+    GOOGLE = "google"
+
+    @classmethod
+    def from_value(cls, value: Union["AsrEngine", str]) -> "AsrEngine":
+        if isinstance(value, cls):
+            return value
+        v = value.strip().lower()
+        if v in {"sensevoice_small", "sensevoice", "local"}:
+            return cls.SENSEVOICE_SMALL
+        if v in {"google", "google_api", "recognize_google"}:
+            return cls.GOOGLE
+        raise ValueError(f"Unknown ASR engine: {value}")
+
 
 class BackgroundSTT:
     def __init__(
@@ -11,13 +30,16 @@ class BackgroundSTT:
         language: str = "zh-CN",
         phrase_time_limit: int = 30,  # 默认调整为 30 秒，避免长语音被硬切
         stitch_threshold: float = 1.0,  # 两段语音间隔小于此值则尝试拼接
-        max_stitch_duration: float = 60.0 # 最大拼接时长（秒），防止无限拼接
+        max_stitch_duration: float = 60.0, # 最大拼接时长（秒），防止无限拼接
+        engine: Union[AsrEngine, str] = AsrEngine.SENSEVOICE_SMALL,
+        local_model_dir: Optional[str] = None # 本地模型目录
     ) -> None:
         self.recognizer: sr.Recognizer = recognizer
         self.language: str = language
         self.phrase_time_limit: int = phrase_time_limit
         self.stitch_threshold: float = stitch_threshold
         self.max_stitch_duration: float = max_stitch_duration
+        self.engine: AsrEngine = AsrEngine.from_value(engine)
 
         # 队列中存储元组：(AudioData, capture_timestamp)
         self.audio_queue: Queue[tuple[sr.AudioData, float]] = Queue()
@@ -28,6 +50,17 @@ class BackgroundSTT:
         # 拼接相关状态
         self._last_audio: Optional[sr.AudioData] = None
         self._last_audio_end_time: float = 0.0
+
+        # 初始化本地引擎
+        self.local_engine: Optional[object] = None
+        if self.engine == AsrEngine.SENSEVOICE_SMALL:
+            try:
+                from .models import SenseVoiceSmallEngine
+                self.local_engine = SenseVoiceSmallEngine(model_dir=local_model_dir)
+            except Exception as e:
+                print(f"Warning: Failed to initialize local engine: {e}")
+                print("Falling back to Google API.")
+                self.engine = AsrEngine.GOOGLE
 
     def _on_phrase(self, recognizer_inner: sr.Recognizer, audio: sr.AudioData) -> None:
         try:
@@ -95,7 +128,16 @@ class BackgroundSTT:
                     # 如果拼接了，优先识别拼接后的完整音频
                     audio_to_recognize = stitched_audio if is_stitched else current_audio
 
-                    text = self.recognizer.recognize_google(audio_to_recognize, language=self.language)  # type: ignore
+                    text = ""
+                    if self.engine == AsrEngine.SENSEVOICE_SMALL and self.local_engine is not None:
+                        # 使用本地引擎
+                        # get_raw_data() 返回 int16 PCM
+                        raw_data = audio_to_recognize.get_raw_data()
+                        sample_rate = audio_to_recognize.sample_rate
+                        text = self.local_engine.transcribe(raw_data, sample_rate)  # type: ignore[attr-defined]
+                    else:
+                        # 使用 Google API
+                        text = self.recognizer.recognize_google(audio_to_recognize, language=self.language)  # type: ignore
 
                     # 3. 结果处理与回调
                     if is_stitched:
@@ -116,6 +158,10 @@ class BackgroundSTT:
                     # 无法识别时，重置拼接状态，避免脏数据污染下一句
                     self._last_audio = None
                 except sr.RequestError as e:
+                    on_request_error(e)
+                    self._last_audio = None
+                except Exception as e:
+                    # 捕获其他异常（如本地引擎报错）
                     on_request_error(e)
                     self._last_audio = None
                 finally:

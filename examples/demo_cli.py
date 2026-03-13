@@ -6,7 +6,7 @@ from colorama import init, Fore, Style
 import demo_consts
 sys.path.append(demo_consts.SRC_DIR)
 
-from voicetyper import AudioDeviceResolver, BackgroundSTT  # noqa: E402
+from voicetyper import AudioDeviceResolver, BackgroundSTT, AsrEngine  # noqa: E402
 
 init(autoreset=True)
 
@@ -44,7 +44,7 @@ def main() -> None:
     recognizer.pause_threshold = 0.5
     recognizer.non_speaking_duration = 0.3
 
-    print(f"{Fore.CYAN}=== 实时连续语音转文字（Google API + 智能拼接修正）==={Style.RESET_ALL}")
+    print(f"{Fore.CYAN}=== 实时连续语音转文字（SenseVoiceSmall 离线版 + 智能拼接修正）==={Style.RESET_ALL}")
     print(f"{Fore.YELLOW}正在初始化麦克风...{Style.RESET_ALL}")
 
     try:
@@ -67,12 +67,14 @@ def main() -> None:
         # phrase_time_limit=30: 允许长达30秒的单次语音（防止硬切）
         # stitch_threshold=1.5: 两段语音间隔1.5秒内尝试拼接
         # max_stitch_duration=60.0: 最大允许拼接成60秒的长语音
+        # engine=AsrEngine.SENSEVOICE_SMALL: 使用本地 SenseVoiceSmall 模型
         service = BackgroundSTT(
             recognizer,
             language="zh-CN",
             phrase_time_limit=30,
             stitch_threshold=1.5,
-            max_stitch_duration=60.0
+            max_stitch_duration=60.0,
+            engine=AsrEngine.SENSEVOICE_SMALL
         )
         service.start_listening(mic)
         service.start_worker(
