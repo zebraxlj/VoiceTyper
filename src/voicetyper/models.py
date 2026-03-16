@@ -1,9 +1,14 @@
 import os
-import urllib.request
-import tarfile
 from typing import Optional
 
 import sherpa_onnx
+
+from .downloads import (
+    download_file,
+    extract_tar_bz2,
+    make_console_count_progress,
+    make_console_download_progress,
+)
 
 
 class SenseVoiceSmallEngine:
@@ -46,11 +51,12 @@ class SenseVoiceSmallEngine:
 
         # 下载
         try:
-            urllib.request.urlretrieve(self.MODEL_URL, tar_path)
+            download_file(self.MODEL_URL, tar_path, on_progress=make_console_download_progress("下载中"))
+            print()
             print("下载完成，正在解压...")
 
-            with tarfile.open(tar_path, "r:bz2") as tar:
-                tar.extractall(path=self.base_dir)
+            extract_tar_bz2(tar_path, self.base_dir, on_progress=make_console_count_progress("解压中"), safe=True)
+            print()
 
             print("解压完成。")
         except Exception as e:
@@ -62,7 +68,7 @@ class SenseVoiceSmallEngine:
 
     def _init_recognizer(self):
         """初始化 sherpa-onnx 识别器。"""
-        print("正在加载 SenseVoiceSmall 模型...")
+        print(f"正在加载 SenseVoiceSmall 模型（{self.model_path}）...")
         try:
             tokens = os.path.join(self.model_path, "tokens.txt")
             model = os.path.join(self.model_path, "model.int8.onnx") # 使用量化版以降低内存
