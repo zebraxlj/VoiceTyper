@@ -27,6 +27,10 @@
 - 已有库结构：`src/voicetyper/`（audio / recognition / models）与 `examples/`
 - `BackgroundSTT` 支持分段识别 + 拼接修正
 - 默认使用本地 SenseVoiceSmall（sherpa-onnx），失败回退 Google
+- 模型下载与解压支持进度展示，并已抽象为可复用下载模块（`voicetyper.downloads`）
+- SenseVoiceSmall 识别链路增加：
+  - 段边界 overlap（上一段尾部音频叠加到下一段开头，降低漏字）
+  - 静音门限（RMS 过滤，降低“没说话也出词”的误触发）
 
 ## 里程碑
 
@@ -61,6 +65,7 @@
 - `voicetyper.audio`：设备选择、采样率能力探测、录音参数
 - `voicetyper.recognition`：录音分段、拼接修正、事件回调（结果/修正/错误）
 - `voicetyper.models`：离线模型的下载、校验、加载、推理封装
+- `voicetyper.downloads`：通用下载/解压封装（进度、超时/重试、安全解压）
 - `examples/`：仅演示，不作为库 API 的一部分
 
 ### 数据流
@@ -79,13 +84,15 @@
   - 对策：统一 16kHz 输入；VAD 前置；量化模型；限制拼接最大时长
 - “修正覆盖”导致 UI 抖动
   - 对策：调优 `stitch_threshold`；增加最小字数/置信度门槛再触发覆盖
+- 无语音时“幻觉输出”（标点/短英文词）
+  - 对策：增加静音门限（RMS 过滤）或引入独立 VAD
 
 ## 待办（与代码 TODO 同步维护）
 
 - [ ] 修复 sherpa-onnx 重采样日志过长问题（强制 16kHz 录音或屏蔽 C++ 日志）
 - [ ] 增加依赖自检命令（打印 Python 位数、VC++ 版本、sherpa-onnx 版本、模型文件完整性）
 - [ ] 增加配置层（例如 `VoiceTyperConfig`：模型目录、阈值、引擎选择）
-- [ ] 引入可选 VAD（Silero VAD / webrtcvad）并允许关闭持续监听
+- [ ] 引入可选 VAD（Silero VAD / webrtcvad）；当前已先用 RMS 门限做轻量过滤
 - [ ] 添加离线回归测试音频（短句、长句、停顿切段、噪声）
 
 ## 使用建议（团队工作流）

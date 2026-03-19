@@ -48,7 +48,7 @@ def download_file(
                 except ValueError:
                     total = None
                 downloaded = 0
-                chunk = 1024 * 512  # 512 KiB
+                chunk = 1024 * 512
                 while True:
                     data = resp.read(chunk)
                     if not data:

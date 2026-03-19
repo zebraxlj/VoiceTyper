@@ -41,8 +41,8 @@ def main() -> None:
     recognizer = sr.Recognizer()
     recognizer.energy_threshold = 4000
     recognizer.dynamic_energy_threshold = True
-    recognizer.pause_threshold = 0.5
-    recognizer.non_speaking_duration = 0.3
+    recognizer.pause_threshold = 1.0
+    recognizer.non_speaking_duration = 1.0
 
     print(f"{Fore.CYAN}=== 实时连续语音转文字（SenseVoiceSmall 离线版 + 智能拼接修正）==={Style.RESET_ALL}")
     print(f"{Fore.YELLOW}正在初始化麦克风...{Style.RESET_ALL}")
@@ -72,8 +72,10 @@ def main() -> None:
             recognizer,
             language="zh-CN",
             phrase_time_limit=30,
-            stitch_threshold=1.5,
+            stitch_threshold=2.5,
             max_stitch_duration=60.0,
+            overlap_ms=200,  # 段与段边界叠加上一段尾音，降低漏字
+            min_rms=150,  # 静音门限：过滤“没说话也出词”的误触发
             engine=AsrEngine.SENSEVOICE_SMALL
         )
         service.start_listening(mic)
