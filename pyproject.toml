@@ -8,6 +8,7 @@ dependencies = [
     "colorama>=0.4.6",
     "numpy>=2.4.3",
     "pyaudio>=0.2.14",
+    "pynput>=1.8.1",
     "sherpa-onnx==1.10.45",
     "speechrecognition>=3.14.6",
 ]
