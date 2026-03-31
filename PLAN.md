@@ -33,6 +33,7 @@
   - 段边界 overlap（上一段尾部音频叠加到下一段开头，降低漏字）
   - 静音门限（RMS 过滤，降低“没说话也出词”的误触发）
 - Push-to-talk 示例已可用：长按左 Ctrl 收音，松开识别（`examples/demo_push_to_talk.py`）
+- UI push-to-talk 示例已可用：悬浮窗 + 剪贴板 + 光标输入 + 托盘退出（`examples/demo_push_to_talk_ui.py`）
 
 ## 里程碑
 
@@ -93,6 +94,7 @@
 
 - [ ] 修复 sherpa-onnx 重采样日志过长问题（强制 16kHz 录音或屏蔽 C++ 日志）
 - [x] 增加 Push-to-talk 示例（长按左 Ctrl 收音，松开识别）
+- [x] 增加 UI push-to-talk 示例（悬浮窗 + 剪贴板 + 光标输入 + 托盘退出）
 - [ ] 增加依赖自检命令（打印 Python 位数、VC++ 版本、sherpa-onnx 版本、模型文件完整性）
 - [ ] 增加配置层（例如 `VoiceTyperConfig`：模型目录、阈值、引擎选择）
 - [ ] 引入可选 VAD（Silero VAD / webrtcvad）；当前已先用 RMS 门限做轻量过滤
