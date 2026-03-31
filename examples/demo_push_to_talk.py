@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import argparse
 import pyaudio
 import signal
 import speech_recognition as sr
@@ -96,6 +97,16 @@ def transcribe_google(recognizer: sr.Recognizer, pcm16: bytes, rate: int, langua
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="demo_push_to_talk")
+    parser.add_argument(
+        "--hold-ms",
+        type=int,
+        default=300,
+        help="长按判定阈值（毫秒）。按住超过该阈值才开始录音，松开后才送入识别。",
+    )
+    args = parser.parse_args()
+    hold_ms = args.hold_ms
+
     engine = AsrEngine.SENSEVOICE_SMALL
     language = "zh-CN"
     exit_event = threading.Event()
@@ -106,7 +117,7 @@ def main() -> None:
     recognizer.pause_threshold = 0.5
     recognizer.non_speaking_duration = 0.3
 
-    print(f"{Fore.CYAN}=== Push-to-Talk（左 Ctrl 按住说话，松开识别）==={Style.RESET_ALL}")
+    print(f"{Fore.CYAN}=== Push-to-Talk（左 Ctrl 长按说话，松开识别）==={Style.RESET_ALL}")
 
     recording = False
     recorder: Optional[PushToTalkRecorder] = None
@@ -132,11 +143,14 @@ def main() -> None:
         config = RecorderConfig()
         recorder = PushToTalkRecorder(device_index=device_index, config=config)
 
+        hold_s = max(0.0, hold_ms / 1000.0)
         last_down_time = 0.0
+        record_start_time = 0.0
         ctrl_down = False
+        start_timer: Optional[threading.Timer] = None
 
         def on_press(key) -> None:
-            nonlocal recording, last_down_time, ctrl_down
+            nonlocal recording, last_down_time, ctrl_down, start_timer, record_start_time
             if isinstance(key, keyboard.KeyCode) and key.char in {"c", "C"} and ctrl_down:
                 exit_event.set()
                 return
@@ -145,21 +159,39 @@ def main() -> None:
             ctrl_down = True
             if recording:
                 return
-            recording = True
+            if start_timer and start_timer.is_alive():
+                return
             last_down_time = time.time()
-            print(f"{Fore.MAGENTA}录音中...{Style.RESET_ALL}")
-            recorder.start()
 
-        def on_release(key) -> bool:
-            nonlocal recording, ctrl_down
+            def _start_if_still_held() -> None:
+                nonlocal recording, record_start_time
+                if not ctrl_down or recording:
+                    return
+                recording = True
+                record_start_time = time.time()
+                print(f"{Fore.MAGENTA}录音中...{Style.RESET_ALL}")
+                recorder.start()
+
+            start_timer = threading.Timer(hold_s, _start_if_still_held)
+            start_timer.daemon = True
+            start_timer.start()
+
+        def on_release(key):
+            nonlocal recording, ctrl_down, start_timer
             if key != keyboard.Key.ctrl_l:
                 return True
             ctrl_down = False
+            if start_timer and start_timer.is_alive():
+                try:
+                    start_timer.cancel()
+                except Exception:
+                    pass
             if not recording:
                 return True
             recording = False
             pcm16 = recorder.stop()
-            dur = max(0.0, time.time() - last_down_time)
+            dur_base = record_start_time if record_start_time > 0 else last_down_time
+            dur = max(0.0, time.time() - dur_base)
             if not pcm16:
                 print(f"{Fore.RED}[空音频]{Style.RESET_ALL}")
                 return True
@@ -175,7 +207,7 @@ def main() -> None:
                 print(f"{Fore.RED}识别失败: {e}{Style.RESET_ALL}")
             return True
 
-        print(f"{Fore.BLUE}按住左 Ctrl 开始说话，松开结束并识别；Ctrl+C 退出{Style.RESET_ALL}")
+        print(f"{Fore.BLUE}左 Ctrl 按住超过 {hold_ms}ms 开始录音，松开结束并识别；Ctrl+C 退出{Style.RESET_ALL}")
 
         def _sigint_handler(signum, frame) -> None:
             exit_event.set()

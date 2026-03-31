@@ -25,6 +25,20 @@
    uv run src/demo_speech_recognition.py
    ```
 
+## 其他示例
+
+1. **离线识别（SenseVoiceSmall）连续转写**:
+   ```bash
+   uv run examples/demo_cli.py
+   ```
+
+2. **Push-to-Talk（左 Ctrl 长按录音）**:
+   ```bash
+   uv run examples/demo_push_to_talk.py --hold-ms 300
+   ```
+   - 按住左 Ctrl 超过阈值才开始录音；松开后才送入识别
+   - `--hold-ms` 可调大避免误触发（例如 400），可调小提升灵敏度（例如 200）
+
 ## 依赖说明
 
 - `SpeechRecognition`: 处理语音识别的核心库。
