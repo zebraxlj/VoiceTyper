@@ -6,6 +6,7 @@ from typing import Optional
 
 import pyaudio
 import re
+import signal
 import tkinter as tk
 from pynput import keyboard as pynput_keyboard
 
@@ -60,7 +61,7 @@ class PushToTalkRecorder:
 
     def stop(self) -> bytes:
         self._stop_event.set()
-        if self._thread:
+        if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
         if self._stream:
             try:
@@ -229,7 +230,7 @@ def main() -> None:
     transcribe_lock = threading.Lock()
 
     print("=== UI Push-to-Talk Demo ===")
-    print("长按左 Ctrl 开始录音，松开识别并输入到当前光标；按 Esc 退出。")
+    print("Hold left left Shift+Win to record, release to transcribe and type. Use tray menu to exit.")
 
     with AudioDeviceResolver() as resolver:
         info = resolver.default_input()
@@ -261,14 +262,20 @@ def main() -> None:
 
     recording = False
     ctrl_down = False
+    shift_down = False
+    win_down = False
     last_down_time = 0.0
     record_start_time = 0.0
     start_timer: Optional[threading.Timer] = None
 
+    def _hotkey_active() -> bool:
+        return shift_down and win_down
+        # return ctrl_down or (shift_down and win_down)
+
     def start_recording() -> None:
         # Called after hold threshold is met.
         nonlocal recording, record_start_time
-        if not ctrl_down or recording:
+        if not _hotkey_active() or recording:
             return
         recording = True
         record_start_time = time.time()
@@ -294,12 +301,19 @@ def main() -> None:
             print(f"识别结果: {text}")
 
     def on_press(key) -> None:
-        # Start hold timer on left Ctrl press.
-        nonlocal ctrl_down, start_timer, last_down_time
-        if key != pynput_keyboard.Key.ctrl_l:
+        # Start hold timer on left Ctrl or left Shift+Win press.
+        nonlocal ctrl_down, shift_down, win_down, start_timer, last_down_time
+        if key == pynput_keyboard.Key.ctrl_l:
+            ctrl_down = True
+        elif key == pynput_keyboard.Key.shift_l:
+            shift_down = True
+        elif key == pynput_keyboard.Key.cmd_l:
+            win_down = True
+        else:
             return
-        ctrl_down = True
         if recording:
+            return
+        if not _hotkey_active():
             return
         if start_timer and start_timer.is_alive():
             return
@@ -311,16 +325,23 @@ def main() -> None:
 
     def on_release(key):
         # On release, stop recording and kick off transcription.
-        nonlocal recording, ctrl_down, start_timer
-        if key != pynput_keyboard.Key.ctrl_l:
+        nonlocal recording, ctrl_down, shift_down, win_down, start_timer
+        if key == pynput_keyboard.Key.ctrl_l:
+            ctrl_down = False
+        elif key == pynput_keyboard.Key.shift_l:
+            shift_down = False
+        elif key == pynput_keyboard.Key.cmd_l:
+            win_down = False
+        else:
             return True
-        ctrl_down = False
-        if start_timer and start_timer.is_alive():
+        if start_timer and start_timer.is_alive() and not _hotkey_active():
             try:
                 start_timer.cancel()
             except Exception:
                 pass
         if not recording:
+            return True
+        if _hotkey_active():
             return True
         recording = False
         ui.hide()
@@ -337,12 +358,25 @@ def main() -> None:
     listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
+    def _sigint_handler(signum, frame) -> None:
+        exit_event.set()
+
+    try:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except Exception:
+        pass
+
     try:
         ui.run(exit_event)
     except KeyboardInterrupt:
         exit_event.set()
         print("结束进程：收到 KeyboardInterrupt，准备退出")
     finally:
+        if recording:
+            try:
+                recorder.stop()
+            except Exception:
+                pass
         try:
             listener.stop()
             print('结束进程：键盘 listener 已终止')
