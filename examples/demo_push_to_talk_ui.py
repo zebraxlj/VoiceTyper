@@ -128,6 +128,7 @@ class OverlayUI:
             self._root.deiconify()
             self._root.lift()
             self._position_bottom_center()
+
         self._root.after(0, _do_show)
 
     def hide(self) -> None:
@@ -267,6 +268,7 @@ def main() -> None:
     last_down_time = 0.0
     record_start_time = 0.0
     start_timer: Optional[threading.Timer] = None
+    state_lock = threading.Lock()
 
     def _hotkey_active() -> bool:
         return shift_down and win_down
@@ -275,10 +277,11 @@ def main() -> None:
     def start_recording() -> None:
         # Called after hold threshold is met.
         nonlocal recording, record_start_time
-        if not _hotkey_active() or recording:
-            return
-        recording = True
-        record_start_time = time.time()
+        with state_lock:
+            if not _hotkey_active() or recording:
+                return
+            recording = True
+            record_start_time = time.time()
         ui.show()
         recorder.start()
 
@@ -301,27 +304,35 @@ def main() -> None:
             print(f"识别结果: {text}")
 
     def on_press(key) -> None:
-        # Start hold timer on left Ctrl or left Shift+Win press.
+        # Start hold timer on left Shift+Win press.
+        # Guard against key auto-repeat: only react to genuine new presses.
         nonlocal ctrl_down, shift_down, win_down, start_timer, last_down_time
         if key == pynput_keyboard.Key.ctrl_l:
+            if ctrl_down:
+                return  # auto-repeat, ignore
             ctrl_down = True
         elif key == pynput_keyboard.Key.shift_l:
+            if shift_down:
+                return  # auto-repeat, ignore
             shift_down = True
         elif key == pynput_keyboard.Key.cmd_l:
+            if win_down:
+                return  # auto-repeat, ignore
             win_down = True
         else:
             return
-        if recording:
-            return
-        if not _hotkey_active():
-            return
-        if start_timer and start_timer.is_alive():
-            return
-        last_down_time = time.time()
+        with state_lock:
+            if recording:
+                return
+            if not _hotkey_active():
+                return
+            if start_timer and start_timer.is_alive():
+                return
+            last_down_time = time.time()
 
-        start_timer = threading.Timer(hold_s, start_recording)
-        start_timer.daemon = True
-        start_timer.start()
+            start_timer = threading.Timer(hold_s, start_recording)
+            start_timer.daemon = True
+            start_timer.start()
 
     def on_release(key):
         # On release, stop recording and kick off transcription.
@@ -334,16 +345,18 @@ def main() -> None:
             win_down = False
         else:
             return True
-        if start_timer and start_timer.is_alive() and not _hotkey_active():
-            try:
-                start_timer.cancel()
-            except Exception:
-                pass
-        if not recording:
-            return True
-        if _hotkey_active():
-            return True
-        recording = False
+        with state_lock:
+            if start_timer and start_timer.is_alive() and not _hotkey_active():
+                try:
+                    start_timer.cancel()
+                except Exception:
+                    pass
+                start_timer = None
+            if not recording:
+                return True
+            if _hotkey_active():
+                return True
+            recording = False
         ui.hide()
         pcm16 = recorder.stop()
         dur_base = record_start_time if record_start_time > 0 else last_down_time
@@ -379,7 +392,7 @@ def main() -> None:
                 pass
         try:
             listener.stop()
-            print('结束进程：键盘 listener 已终止')
+            print("结束进程：键盘 listener 已终止")
         except Exception as e:
             print(f"结束进程：键盘 listener 终止出错：{e}")
         if tray_icon:
@@ -389,9 +402,9 @@ def main() -> None:
                 pass
         try:
             recorder.close()
-            print('结束进程：收音已终止')
+            print("结束进程：收音已终止")
         except Exception as e:
-            print(f'结束进程：收音终止出错：{e}')
+            print(f"结束进程：收音终止出错：{e}")
         print("结束进程：已退出")
 
 
