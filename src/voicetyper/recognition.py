@@ -31,11 +31,12 @@ class BackgroundSTT:
         language: str = "zh-CN",
         phrase_time_limit: int = 30,  # 默认调整为 30 秒，避免长语音被硬切
         stitch_threshold: float = 1.0,  # 两段语音间隔小于此值则尝试拼接
-        max_stitch_duration: float = 60.0, # 最大拼接时长（秒），防止无限拼接
+        max_stitch_duration: float = 60.0,  # 最大拼接时长（秒），防止无限拼接
         overlap_ms: int = 200,  # 将上一段末尾 N ms 音频“叠加”到下一段开头，降低边界漏字
         min_rms: int = 150,  # 低于该能量阈值的片段视为静音/底噪，直接跳过识别
         engine: Union[AsrEngine, str] = AsrEngine.SENSEVOICE_SMALL,
-        local_model_dir: Optional[str] = None # 本地模型目录
+        local_model_dir: Optional[str] = None,  # 本地模型目录
+        strip_trailing_period: bool = True,  # 是否去除识别结果末尾的句号/句点
     ) -> None:
         """
         后台语音转文字服务（分段收音 + 可选拼接修正）。
@@ -54,6 +55,7 @@ class BackgroundSTT:
         - min_rms: 仅对 SenseVoiceSmall 生效；静音门限（RMS），低于阈值的片段视为底噪并跳过识别，降低“没说话也出词”的误触发。
         - engine: 选择识别引擎（`AsrEngine.SENSEVOICE_SMALL` 或 `AsrEngine.GOOGLE`）。
         - local_model_dir: 本地模型目录（SenseVoiceSmall 使用；None 时使用默认缓存目录）。
+        - strip_trailing_period: 是否自动去除识别结果末尾的句号/句点（默认开启）。
         """
         self.recognizer: sr.Recognizer = recognizer
         self.language: str = language
@@ -83,7 +85,11 @@ class BackgroundSTT:
         if self.engine == AsrEngine.SENSEVOICE_SMALL:
             try:
                 from .models import SenseVoiceSmallEngine
-                self.local_engine = SenseVoiceSmallEngine(model_dir=local_model_dir)
+
+                self.local_engine = SenseVoiceSmallEngine(
+                    model_dir=local_model_dir,
+                    strip_trailing_period=strip_trailing_period,
+                )
             except Exception as e:
                 print(f"Warning: Failed to initialize local engine: {e}")
                 print("Falling back to Google API.")
@@ -107,7 +113,7 @@ class BackgroundSTT:
         on_status: Callable[[str], None],
         on_result: Callable[[str, bool], None],  # changed: (text, is_correction)
         on_unintelligible: Callable[[], None],
-        on_request_error: Callable[[Exception], None]
+        on_request_error: Callable[[Exception], None],
     ) -> None:
         def worker() -> None:
             while not self.stop_event.is_set():
@@ -166,7 +172,7 @@ class BackgroundSTT:
                                 stitched_audio = sr.AudioData(
                                     new_data,
                                     current_audio.sample_rate,
-                                    current_audio.sample_width
+                                    current_audio.sample_width,
                                 )
                                 is_stitched = True
 
@@ -217,7 +223,7 @@ class BackgroundSTT:
                         self._last_audio = stitched_audio
                     else:
                         # 这是一个新句子
-                        on_result(text, False) # False = new sentence
+                        on_result(text, False)  # False = new sentence
                         self._last_audio = current_audio
 
                     # 更新结束时间
@@ -248,6 +254,7 @@ class BackgroundSTT:
                         self.audio_queue.task_done()
                     except Exception:
                         pass
+
         self.worker_thread = threading.Thread(target=worker, daemon=True)
         self.worker_thread.start()
 

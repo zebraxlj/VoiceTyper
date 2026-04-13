@@ -11,6 +11,7 @@ import tkinter as tk
 from pynput import keyboard as pynput_keyboard
 
 import demo_consts
+
 sys.path.append(demo_consts.SRC_DIR)
 
 from voicetyper import AudioDeviceResolver  # noqa: E402
@@ -226,6 +227,7 @@ def _start_tray_icon(exit_event: threading.Event):
 
 def main() -> None:
     hold_ms = 300
+    strip_trailing_period = True  # 设为 False 可保留识别结果末尾的句号/句点
     hold_s = max(0.0, hold_ms / 1000.0)
     exit_event = threading.Event()
     transcribe_lock = threading.Lock()
@@ -243,7 +245,7 @@ def main() -> None:
 
     try:
         # Load model upfront so first use is fast.
-        model = SenseVoiceSmallEngine()
+        model = SenseVoiceSmallEngine(strip_trailing_period=strip_trailing_period)
     except Exception as exc:
         print(f"模型加载失败: {exc}")
         return

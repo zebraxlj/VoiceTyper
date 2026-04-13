@@ -20,13 +20,17 @@ class SenseVoiceSmallEngine:
     MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
     MODEL_DIR_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
 
-    def __init__(self, model_dir: Optional[str] = None):
+    def __init__(
+        self, model_dir: Optional[str] = None, strip_trailing_period: bool = True
+    ):
         """
         初始化引擎。
 
         Args:
             model_dir: 模型存放目录。如果为 None，则默认存放在用户目录下的 .voicetyper/models 中。
+            strip_trailing_period: 是否自动去除识别结果末尾的句号/句点（默认开启）。
         """
+        self.strip_trailing_period = strip_trailing_period
         if model_dir is None:
             home = os.path.expanduser("~")
             self.base_dir = os.path.join(home, ".voicetyper", "models")
@@ -81,7 +85,7 @@ class SenseVoiceSmallEngine:
             self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                 model=model,
                 tokens=tokens,
-                use_itn=True, # 启用逆文本标准化（如将“一二三”转为“123”）
+                use_itn=True,  # 启用逆文本标准化（如将“一二三”转为“123”）
             )
             print("模型加载完成。")
         except Exception as e:
@@ -107,10 +111,15 @@ class SenseVoiceSmallEngine:
         # 将字节流转换为 float32 数组 (归一化到 -1.0 ~ 1.0)
         # 注意：speech_recognition 的 get_raw_data() 返回的是 int16 (2 bytes)
         import numpy as np
+
         samples = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
 
         stream.accept_waveform(sample_rate, samples)
         self._recognizer.decode_stream(stream)
 
         result = stream.result
-        return result.text
+        text = result.text
+        if self.strip_trailing_period:
+            # 去除模型自动添加的末尾句号/句点
+            text = text.rstrip("。.")
+        return text

@@ -12,6 +12,7 @@ from colorama import init, Fore, Style
 from pynput import keyboard
 
 import demo_consts
+
 sys.path.append(demo_consts.SRC_DIR)
 
 from voicetyper import AudioDeviceResolver, AsrEngine  # noqa: E402
@@ -104,8 +105,15 @@ def main() -> None:
         default=300,
         help="长按判定阈值（毫秒）。按住超过该阈值才开始录音，松开后才送入识别。",
     )
+    parser.add_argument(
+        "--keep-period",
+        action="store_true",
+        default=False,
+        help="保留识别结果末尾的句号/句点（默认自动去除）。",
+    )
     args = parser.parse_args()
     hold_ms = args.hold_ms
+    strip_trailing_period = not args.keep_period
 
     engine = AsrEngine.SENSEVOICE_SMALL
     language = "zh-CN"
@@ -134,7 +142,9 @@ def main() -> None:
         model: Optional[SenseVoiceSmallEngine] = None
         if engine == AsrEngine.SENSEVOICE_SMALL:
             try:
-                model = SenseVoiceSmallEngine()
+                model = SenseVoiceSmallEngine(
+                    strip_trailing_period=strip_trailing_period
+                )
             except Exception as e:
                 print(f"{Fore.RED}本地模型初始化失败: {e}{Style.RESET_ALL}")
                 print(f"{Fore.YELLOW}回退到 Google 识别（需要联网）{Style.RESET_ALL}")
