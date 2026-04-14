@@ -34,6 +34,7 @@ class SenseVoiceSmallEngine:
         model_dir: Optional[str] = None,
         strip_trailing_period: bool = True,
         quantized: bool = True,
+        num_threads: int = 2,
     ):
         """初始化引擎。
 
@@ -43,9 +44,11 @@ class SenseVoiceSmallEngine:
             quantized: 是否使用 int8 量化模型（默认开启）。
                 设为 False 后使用 fp32 全精度模型，识别精度更高但内存占用约为量化版的 4 倍。
                 若指定版本不存在，会自动回退到另一版本。
+            num_threads: onnxruntime 推理线程数（默认 2）。增大可降低延迟，但会占用更多 CPU。
         """
         self.strip_trailing_period = strip_trailing_period
         self.quantized = quantized
+        self.num_threads = num_threads
         if model_dir is None:
             home = os.path.expanduser("~")
             self.base_dir = os.path.join(home, ".voicetyper", "models")
@@ -115,6 +118,7 @@ class SenseVoiceSmallEngine:
                 model=model,
                 tokens=tokens,
                 use_itn=True,  # 启用逆文本标准化（如将"一二三"转为"123"）
+                num_threads=self.num_threads,
             )
             print(
                 f"模型加载完成（{'int8 量化' if self.quantized else 'fp32 全精度'}）。"
