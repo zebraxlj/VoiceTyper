@@ -99,6 +99,8 @@ class SenseVoiceSmallEngine:
 
     def _init_recognizer(self):
         """根据 ``self.quantized`` 选择模型文件并初始化 sherpa-onnx 离线识别器。"""
+        import time as _time
+
         print(f"正在加载 SenseVoiceSmall 模型（{self.model_path}）...")
         try:
             tokens = os.path.join(self.model_path, "tokens.txt")
@@ -114,15 +116,16 @@ class SenseVoiceSmallEngine:
                     print("fp32 全精度模型不存在，回退到 int8 量化模型。")
                     model = os.path.join(self.model_path, "model.int8.onnx")
 
+            t0 = _time.perf_counter()
             self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                 model=model,
                 tokens=tokens,
                 use_itn=True,  # 启用逆文本标准化（如将"一二三"转为"123"）
                 num_threads=self.num_threads,
             )
-            print(
-                f"模型加载完成（{'int8 量化' if self.quantized else 'fp32 全精度'}）。"
-            )
+            elapsed = _time.perf_counter() - t0
+            variant = "int8 量化" if self.quantized else "fp32 全精度"
+            print(f"模型加载完成（{variant}），耗时 {elapsed:.2f}s。")
         except Exception as e:
             print(f"初始化识别器失败: {e}")
             raise
