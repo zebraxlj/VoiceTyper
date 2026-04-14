@@ -1,3 +1,4 @@
+import ctypes
 import sys
 import threading
 import time
@@ -55,7 +56,9 @@ class PushToTalkRecorder:
         assert self._stream is not None
         while not self._stop_event.is_set():
             try:
-                data = self._stream.read(self.config.frames_per_buffer, exception_on_overflow=False)
+                data = self._stream.read(
+                    self.config.frames_per_buffer, exception_on_overflow=False
+                )
             except Exception:
                 continue
             self._frames.append(data)
@@ -102,7 +105,13 @@ class OverlayUI:
             pass
         self._root.configure(bg="#121212")
 
-        frame = tk.Frame(self._root, bg="#121212", bd=1, highlightthickness=1, highlightbackground="#2a2a2a")
+        frame = tk.Frame(
+            self._root,
+            bg="#121212",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground="#2a2a2a",
+        )
         frame.pack(padx=12, pady=10)
 
         self._label = tk.Label(
@@ -170,9 +179,25 @@ def _is_meaningful_text(text: str) -> bool:
         return False
     lowered = value.lower()
     fillers = {
-        "yeah", "yea", "yep", "yah", "ya",
-        "uh", "um", "er", "ah", "eh", "mm", "hmm",
-        "嗯", "嗯嗯", "啊", "呃", "额", "嗯哼", "em",
+        "yeah",
+        "yea",
+        "yep",
+        "yah",
+        "ya",
+        "uh",
+        "um",
+        "er",
+        "ah",
+        "eh",
+        "mm",
+        "hmm",
+        "嗯",
+        "嗯嗯",
+        "啊",
+        "呃",
+        "额",
+        "嗯哼",
+        "em",
     }
     if lowered in fillers:
         return False
@@ -233,7 +258,9 @@ def main() -> None:
     transcribe_lock = threading.Lock()
 
     print("=== UI Push-to-Talk Demo ===")
-    print("Hold left left Shift+Win to record, release to transcribe and type. Use tray menu to exit.")
+    print(
+        "Hold left left Shift+Win to record, release to transcribe and type. Use tray menu to exit."
+    )
 
     with AudioDeviceResolver() as resolver:
         info = resolver.default_input()
@@ -272,15 +299,40 @@ def main() -> None:
     start_timer: Optional[threading.Timer] = None
     state_lock = threading.Lock()
 
+    # Windows 虚拟键码
+    VK_LSHIFT = 0xA0
+    VK_LWIN = 0x5B
+
+    def _is_key_physically_pressed(vk: int) -> bool:
+        """通过 Win32 GetAsyncKeyState 查询按键是否真的被按着。"""
+        # 最高位 (0x8000) 表示此刻按键处于按下状态
+        return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
+
     def _hotkey_active() -> bool:
         return shift_down and win_down
         # return ctrl_down or (shift_down and win_down)
+
+    def _hotkey_physically_held() -> bool:
+        """在关键时刻用 Win32 API 二次确认两个键是否真的同时按着。"""
+        return _is_key_physically_pressed(VK_LSHIFT) and _is_key_physically_pressed(
+            VK_LWIN
+        )
+
+    def _sync_modifier_state() -> None:
+        """根据物理按键状态修正软件追踪的标志位，防止漏掉 release 事件导致状态残留。"""
+        nonlocal shift_down, win_down
+        if shift_down and not _is_key_physically_pressed(VK_LSHIFT):
+            shift_down = False
+        if win_down and not _is_key_physically_pressed(VK_LWIN):
+            win_down = False
 
     def start_recording() -> None:
         # Called after hold threshold is met.
         nonlocal recording, record_start_time
         with state_lock:
-            if not _hotkey_active() or recording:
+            # 用物理按键状态做最终确认，防止 release 事件被系统吞掉后状态残留
+            _sync_modifier_state()
+            if not _hotkey_active() or not _hotkey_physically_held() or recording:
                 return
             recording = True
             record_start_time = time.time()
@@ -326,6 +378,7 @@ def main() -> None:
         with state_lock:
             if recording:
                 return
+            _sync_modifier_state()
             if not _hotkey_active():
                 return
             if start_timer and start_timer.is_alive():
