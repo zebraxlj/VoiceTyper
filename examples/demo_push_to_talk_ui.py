@@ -272,7 +272,10 @@ def main() -> None:
 
     try:
         # Load model upfront so first use is fast.
-        model = SenseVoiceSmallEngine(strip_trailing_period=strip_trailing_period)
+        model = SenseVoiceSmallEngine(
+            strip_trailing_period=strip_trailing_period,
+            quantized=False,
+        )
     except Exception as exc:
         print(f"模型加载失败: {exc}")
         return
