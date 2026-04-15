@@ -41,6 +41,7 @@
   - `corrections_file`：基于 TSV 词表的识别结果纠错（大小写不敏感替换，默认读取 `~/.voicetyper/corrections.tsv`）
 - UI push-to-talk 热键防误触：通过 Win32 `GetAsyncKeyState` 二次校验物理按键状态，修复 Windows 吞掉修饰键 release 事件导致的状态残留问题
 - 模型加载计时输出
+- 文本输入改用 Win32 `SendInput`（`KEYEVENTF_UNICODE`）逐字符注入，绕过中文输入法对英文字母的拦截，同时保留逐字输入的视觉效果
 
 ## 里程碑
 
@@ -107,6 +108,8 @@
 - [x] 基于 TSV 词表的识别结果纠错（`corrections.tsv`）
 - [x] UI push-to-talk 热键防误触（Win32 物理按键状态校验）
 - [x] 模型加载计时
+- [x] 文本输入绕过输入法（Win32 `SendInput` + `KEYEVENTF_UNICODE`）
+- [ ] 将文本输入方式抽象为跨平台接口（当前仅 Windows `SendInput`；需支持 Linux X11/Wayland、macOS Quartz）
 - [ ] 引入 LLM 后处理纠错（可选，用于修正专有名词/英文快速语音等场景；支持云端 API 或本地模型）
 - [ ] 增加依赖自检命令（打印 Python 位数、VC++ 版本、sherpa-onnx 版本、模型文件完整性）
 - [ ] 增加配置层（例如 `VoiceTyperConfig`：模型目录、阈值、引擎选择）
@@ -118,6 +121,7 @@
 - SenseVoiceSmall 对英文快速语音识别精度较低（如专有名词被拆散：`SenseVoiceSmall` → `Since voice is small`）
 - SenseVoiceSmall 对发音相近的中文字偶有混淆（如"输入"→"叔入"），量化模型（int8）比全精度（fp32）更明显
 - 纠错词表（`corrections.tsv`）为静态规则，无法自动适应新词；LLM 后处理纠错可弥补此不足（待实现）
+- UI push-to-talk 示例目前仅支持 Windows（依赖 Win32 API：`SendInput`、`GetAsyncKeyState`、`pystray` 托盘）
 
 ## 使用建议（团队工作流）
 

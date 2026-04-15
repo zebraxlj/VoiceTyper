@@ -91,6 +91,82 @@ class PushToTalkRecorder:
             pass
 
 
+def _send_unicode_string(text: str, char_delay: float = 0.01) -> None:
+    """通过 Win32 SendInput 逐字符发送 Unicode 输入事件，绕过输入法。"""
+    import time as _time
+
+    INPUT_KEYBOARD = 1
+    KEYEVENTF_UNICODE = 0x0004
+    KEYEVENTF_KEYUP = 0x0002
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_long),
+            ("mouseData", ctypes.c_ulong),
+            ("dwFlags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ]
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", ctypes.c_ushort),
+            ("wScan", ctypes.c_ushort),
+            ("dwFlags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg", ctypes.c_ulong),
+            ("wParamL", ctypes.c_ushort),
+            ("wParamH", ctypes.c_ushort),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [
+            ("mi", MOUSEINPUT),
+            ("ki", KEYBDINPUT),
+            ("hi", HARDWAREINPUT),
+        ]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [
+            ("type", ctypes.c_ulong),
+            ("union", _INPUT_UNION),
+        ]
+
+    SendInput = ctypes.windll.user32.SendInput
+    SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+    SendInput.restype = ctypes.c_uint
+
+    for ch in text:
+        code = ord(ch)
+        # key down
+        inp_down = INPUT()
+        inp_down.type = INPUT_KEYBOARD
+        inp_down.union.ki.wVk = 0
+        inp_down.union.ki.wScan = code
+        inp_down.union.ki.dwFlags = KEYEVENTF_UNICODE
+        inp_down.union.ki.time = 0
+        inp_down.union.ki.dwExtraInfo = None
+        # key up
+        inp_up = INPUT()
+        inp_up.type = INPUT_KEYBOARD
+        inp_up.union.ki.wVk = 0
+        inp_up.union.ki.wScan = code
+        inp_up.union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+        inp_up.union.ki.time = 0
+        inp_up.union.ki.dwExtraInfo = None
+
+        inputs = (INPUT * 2)(inp_down, inp_up)
+        SendInput(2, inputs, ctypes.sizeof(INPUT))
+        if char_delay > 0:
+            _time.sleep(char_delay)
+
+
 class OverlayUI:
     def __init__(self) -> None:
         self._root = tk.Tk()
@@ -357,7 +433,8 @@ def main() -> None:
                 print(f"忽略无意义结果: {text}")
                 return
             ui.set_clipboard(text)
-            kb_controller.type(text)
+            # 通过 Win32 SendInput 发送 Unicode 字符，绕过输入法且保留逐字输入效果
+            _send_unicode_string(text)
             print(f"识别结果: {text}")
 
     def on_press(key) -> None:
