@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Optional
 
 import sherpa_onnx
@@ -18,6 +19,12 @@ class SenseVoiceSmallEngine:
     - 自动下载并解压模型文件到本地缓存目录。
     - 支持 int8 量化模型与 fp32 全精度模型切换。
     - 可选去除识别结果末尾的句号/句点。
+    - 支持文本纠错：通过 TSV 词表修正专有名词的识别错误。
+
+    纠错词表格式（TSV，默认路径 ``~/.voicetyper/corrections.tsv``）::
+
+        # 每行一条：错误写法<TAB>正确写法（以 # 开头的行为注释）
+        open search	OpenSearch
 
     使用示例::
 
@@ -29,12 +36,17 @@ class SenseVoiceSmallEngine:
     MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
     MODEL_DIR_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
 
+    DEFAULT_CORRECTIONS_PATH = os.path.join(
+        os.path.expanduser("~"), ".voicetyper", "corrections.tsv"
+    )
+
     def __init__(
         self,
         model_dir: Optional[str] = None,
         strip_trailing_period: bool = True,
         quantized: bool = True,
         num_threads: int = 2,
+        corrections_file: Optional[str] = None,
     ):
         """初始化引擎。
 
@@ -45,6 +57,8 @@ class SenseVoiceSmallEngine:
                 设为 False 后使用 fp32 全精度模型，识别精度更高但内存占用约为量化版的 4 倍。
                 若指定版本不存在，会自动回退到另一版本。
             num_threads: onnxruntime 推理线程数（默认 2）。增大可降低延迟，但会占用更多 CPU。
+            corrections_file: 纠错词表文件路径（TSV 格式，每行 ``错误写法<TAB>正确写法``）。
+                为 None 时默认读取 ``~/.voicetyper/corrections.tsv``，文件不存在则跳过。
         """
         self.strip_trailing_period = strip_trailing_period
         self.quantized = quantized
@@ -57,9 +71,15 @@ class SenseVoiceSmallEngine:
 
         self.model_path = os.path.join(self.base_dir, self.MODEL_DIR_NAME)
         self._recognizer: Optional[sherpa_onnx.OfflineRecognizer] = None
+        self._correction_rules: list[tuple[re.Pattern, str]] = []
 
         self._ensure_model_exists()
         self._init_recognizer()
+        self._load_corrections(
+            corrections_file
+            if corrections_file is not None
+            else self.DEFAULT_CORRECTIONS_PATH
+        )
 
     def _ensure_model_exists(self):
         """检查模型目录是否存在，不存在则从 GitHub 下载并解压。"""
@@ -130,6 +150,38 @@ class SenseVoiceSmallEngine:
             print(f"初始化识别器失败: {e}")
             raise
 
+    def _load_corrections(self, path: str) -> None:
+        """从 TSV 文件加载纠错替换规则。
+
+        文件格式为每行一条 ``错误写法<TAB>正确写法``，以 ``#`` 开头的行视为注释。
+        匹配时大小写不敏感，替换结果保留词表中指定的大小写。
+        """
+        self._correction_rules = []
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                for lineno, line in enumerate(f, 1):
+                    line = line.rstrip("\n\r")
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split("\t")
+                    if len(parts) != 2 or not parts[0] or not parts[1]:
+                        print(f"纠错词表第 {lineno} 行格式错误，已跳过: {line!r}")
+                        continue
+                    pattern = re.compile(re.escape(parts[0]), re.IGNORECASE)
+                    self._correction_rules.append((pattern, parts[1]))
+            if self._correction_rules:
+                print(f"已加载 {len(self._correction_rules)} 条纠错规则（{path}）。")
+        except Exception as e:
+            print(f"加载纠错词表失败: {e}")
+
+    def _apply_corrections(self, text: str) -> str:
+        """对识别结果应用纠错替换规则。"""
+        for pattern, replacement in self._correction_rules:
+            text = pattern.sub(replacement, text)
+        return text
+
     def transcribe(self, audio_data: bytes, sample_rate: int) -> str:
         """将 PCM 音频数据转为文本。
 
@@ -138,7 +190,7 @@ class SenseVoiceSmallEngine:
             sample_rate: 音频采样率（Hz）。sherpa-onnx 内部会自动重采样到 16000Hz。
 
         Returns:
-            识别出的文本。若开启了 ``strip_trailing_period``，末尾句号/句点会被去除。
+            识别出的文本。依次经过末尾句号去除（如开启）和纠错替换（如有词表）。
 
         Raises:
             RuntimeError: 识别器未初始化时调用。
@@ -162,4 +214,6 @@ class SenseVoiceSmallEngine:
         if self.strip_trailing_period:
             # 去除模型自动添加的末尾句号/句点
             text = text.rstrip("。.")
+        if self._correction_rules:
+            text = self._apply_corrections(text)
         return text
