@@ -31,9 +31,16 @@
 - 模型下载与解压支持进度展示，并已抽象为可复用下载模块（`voicetyper.downloads`）
 - SenseVoiceSmall 识别链路增加：
   - 段边界 overlap（上一段尾部音频叠加到下一段开头，降低漏字）
-  - 静音门限（RMS 过滤，降低“没说话也出词”的误触发）
+  - 静音门限（RMS 过滤，降低"没说话也出词"的误触发）
 - Push-to-talk 示例已可用：长按左 Ctrl 收音，松开识别（`examples/demo_push_to_talk.py`）
 - UI push-to-talk 示例已可用：悬浮窗 + 剪贴板 + 光标输入 + 托盘退出（`examples/demo_push_to_talk_ui.py`）
+- `SenseVoiceSmallEngine` 支持多项可配置参数：
+  - `strip_trailing_period`：可选去除模型输出末尾的句号/句点
+  - `quantized`：可选 int8 量化模型或 fp32 全精度模型（精度更高、内存更大）
+  - `num_threads`：onnxruntime 推理线程数（默认 2，可调）
+  - `corrections_file`：基于 TSV 词表的识别结果纠错（大小写不敏感替换，默认读取 `~/.voicetyper/corrections.tsv`）
+- UI push-to-talk 热键防误触：通过 Win32 `GetAsyncKeyState` 二次校验物理按键状态，修复 Windows 吞掉修饰键 release 事件导致的状态残留问题
+- 模型加载计时输出
 
 ## 里程碑
 
@@ -76,8 +83,9 @@
 1. 音频采集（麦克风）
 2. VAD/切段（当前由 speech_recognition 的静音检测驱动；后续可替换为独立 VAD）
 3. ASR 推理（默认 SenseVoiceSmall；失败回退 Google）
-4. 拼接修正（短间隔片段拼接后重识并覆盖上一条文本）
-5. 上层使用方消费：CLI 打印 / GUI 更新 / 服务端 API
+4. 后处理：末尾标点去除 → 纠错词表替换 → （规划中）LLM 纠错
+5. 拼接修正（短间隔片段拼接后重识并覆盖上一条文本）
+6. 上层使用方消费：CLI 打印 / GUI 更新 / 服务端 API
 
 ## 风险清单与对策
 
@@ -95,10 +103,21 @@
 - [ ] 修复 sherpa-onnx 重采样日志过长问题（强制 16kHz 录音或屏蔽 C++ 日志）
 - [x] 增加 Push-to-talk 示例（长按左 Ctrl 收音，松开识别）
 - [x] 增加 UI push-to-talk 示例（悬浮窗 + 剪贴板 + 光标输入 + 托盘退出）
+- [x] `SenseVoiceSmallEngine` 参数化：量化开关、线程数、末尾标点去除开关
+- [x] 基于 TSV 词表的识别结果纠错（`corrections.tsv`）
+- [x] UI push-to-talk 热键防误触（Win32 物理按键状态校验）
+- [x] 模型加载计时
+- [ ] 引入 LLM 后处理纠错（可选，用于修正专有名词/英文快速语音等场景；支持云端 API 或本地模型）
 - [ ] 增加依赖自检命令（打印 Python 位数、VC++ 版本、sherpa-onnx 版本、模型文件完整性）
 - [ ] 增加配置层（例如 `VoiceTyperConfig`：模型目录、阈值、引擎选择）
 - [ ] 引入可选 VAD（Silero VAD / webrtcvad）；当前已先用 RMS 门限做轻量过滤
 - [ ] 添加离线回归测试音频（短句、长句、停顿切段、噪声）
+
+## 已知局限
+
+- SenseVoiceSmall 对英文快速语音识别精度较低（如专有名词被拆散：`SenseVoiceSmall` → `Since voice is small`）
+- SenseVoiceSmall 对发音相近的中文字偶有混淆（如"输入"→"叔入"），量化模型（int8）比全精度（fp32）更明显
+- 纠错词表（`corrections.tsv`）为静态规则，无法自动适应新词；LLM 后处理纠错可弥补此不足（待实现）
 
 ## 使用建议（团队工作流）
 
