@@ -17,6 +17,9 @@ sys.path.append(demo_consts.SRC_DIR)
 
 from voicetyper import AudioDeviceResolver  # noqa: E402
 from voicetyper.models import SenseVoiceSmallEngine  # noqa: E402
+from voicetyper.monitor import ResourceMonitor  # noqa: E402
+
+SHOW_RESOURCE_USAGE = False
 
 
 @dataclass
@@ -332,6 +335,10 @@ def main() -> None:
     hold_s = max(0.0, hold_ms / 1000.0)
     exit_event = threading.Event()
     transcribe_lock = threading.Lock()
+
+    # 启动资源监控（每秒输出一次 CPU / 内存 / GPU 显存）
+    if SHOW_RESOURCE_USAGE:
+        ResourceMonitor(interval=1.0, exit_event=exit_event).start()
 
     print("=== UI Push-to-Talk Demo ===")
     print(

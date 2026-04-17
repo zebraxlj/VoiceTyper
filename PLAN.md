@@ -41,6 +41,8 @@
   - `corrections_file`：基于 TSV 词表的识别结果纠错（大小写不敏感替换，默认读取 `~/.voicetyper/corrections.tsv`）
 - UI push-to-talk 热键防误触：通过 Win32 `GetAsyncKeyState` 二次校验物理按键状态，修复 Windows 吞掉修饰键 release 事件导致的状态残留问题
 - 模型加载计时输出
+- 新增轻量资源监控模块 `voicetyper.monitor.ResourceMonitor`：后台线程定时输出当前进程 CPU / RAM，并在可用时输出 GPU 显存占用
+- UI push-to-talk 示例支持可选资源监控开关（`SHOW_RESOURCE_USAGE`），便于录音/识别链路调优
 - 文本输入改用 Win32 `SendInput`（`KEYEVENTF_UNICODE`）逐字符注入，绕过中文输入法对英文字母的拦截，同时保留逐字输入的视觉效果
 
 ## 里程碑
@@ -108,6 +110,7 @@
 - [x] 基于 TSV 词表的识别结果纠错（`corrections.tsv`）
 - [x] UI push-to-talk 热键防误触（Win32 物理按键状态校验）
 - [x] 模型加载计时
+- [x] 增加轻量资源监控器（`ResourceMonitor`，支持 CPU/RAM 与可选 GPU 显存输出）
 - [x] 文本输入绕过输入法（Win32 `SendInput` + `KEYEVENTF_UNICODE`）
 - [ ] 将文本输入方式抽象为跨平台接口（当前仅 Windows `SendInput`；需支持 Linux X11/Wayland、macOS Quartz）
 - [ ] 引入 LLM 后处理纠错（可选，用于修正专有名词/英文快速语音等场景；支持云端 API 或本地模型）
