@@ -135,12 +135,13 @@
 - [x] 让使用方（examples）自行配置 `logging.basicConfig()`，库代码不设置日志格式
 - [x] `downloads.py` 中的 `make_console_*_progress` 为调用方提供的进度回调（终端 UI 行为），保持 `sys.stdout.write` 不变
 
-### 第三步：拆分 BackgroundSTT.start_worker，加 context manager 和线程安全
+### 第三步：拆分 BackgroundSTT.start_worker，加 context manager 和线程安全 ✅
 
-- [ ] 提取 `_reset_stitch_state()` 方法（当前重复 3 次的状态重置代码块）
-- [ ] 将 148 行的 `worker()` 嵌套函数拆分为独立方法：`_filter_silence()`, `_try_stitch()`, `_recognize()` 等
-- [ ] 为 `BackgroundSTT` 添加 `__enter__` / `__exit__` context manager 支持
-- [ ] 对 `_last_audio` 等跨线程可变状态添加 `threading.Lock` 保护（或明确文档标注线程所有权）
+- [x] 提取 `_reset_stitch_state()` 方法（消除 3 处重复的状态重置代码块）
+- [x] 将 148 行的 `worker()` 嵌套函数拆分为实例方法：`_worker_loop()`, `_process_audio()`, `_is_silence()`, `_try_stitch()`, `_recognize()`, `_save_overlap()`
+- [x] 回调引用存为实例属性（`_on_status` 等），消除嵌套函数闭包捕获
+- [x] 为 `BackgroundSTT` 添加 `__enter__` / `__exit__` context manager 支持
+- [x] 添加 `threading.Lock`（`_stitch_lock`）保护 `_last_audio` 等拼接状态的跨线程访问
 
 ### 第四步：提取 PushToTalkRecorder 到库中，解耦 speech_recognition 依赖
 

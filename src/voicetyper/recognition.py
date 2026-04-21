@@ -46,6 +46,14 @@ class AsrEngine(str, Enum):
 
 
 class BackgroundSTT:
+    """后台语音转文字服务（分段收音 + 可选拼接修正）。
+
+    说明：
+    - 音频分段由 ``speech_recognition`` 的静音检测驱动（``pause_threshold`` 等参数会影响切段边界）。
+    - 默认使用本地 SenseVoiceSmall（sherpa-onnx）；本地引擎初始化失败时回退到 Google 识别。
+    - 支持 context manager（``with`` 语句），退出时自动停止后台线程和监听。
+    """
+
     def __init__(
         self,
         recognizer: sr.Recognizer,
@@ -53,28 +61,23 @@ class BackgroundSTT:
         phrase_time_limit: int = 30,  # 默认调整为 30 秒，避免长语音被硬切
         stitch_threshold: float = 1.0,  # 两段语音间隔小于此值则尝试拼接
         max_stitch_duration: float = 60.0,  # 最大拼接时长（秒），防止无限拼接
-        overlap_ms: int = 200,  # 将上一段末尾 N ms 音频“叠加”到下一段开头，降低边界漏字
+        overlap_ms: int = 200,  # 将上一段末尾 N ms 音频"叠加"到下一段开头，降低边界漏字
         min_rms: int = 150,  # 低于该能量阈值的片段视为静音/底噪，直接跳过识别
         engine: Union[AsrEngine, str] = AsrEngine.SENSEVOICE_SMALL,
         local_model_dir: Optional[str] = None,  # 本地模型目录
         strip_trailing_period: bool = True,  # 是否去除识别结果末尾的句号/句点
     ) -> None:
-        """
-        后台语音转文字服务（分段收音 + 可选拼接修正）。
-
-        说明：
-        - 音频分段由 `speech_recognition` 的静音检测驱动（`pause_threshold` 等参数会影响切段边界）。
-        - 默认使用本地 SenseVoiceSmall（sherpa-onnx）；本地引擎初始化失败时回退到 Google 识别。
+        """初始化后台语音转文字服务。
 
         参数：
-        - recognizer: `speech_recognition.Recognizer` 实例（用于 listen_in_background 与可选 Google 识别）。
+        - recognizer: ``speech_recognition.Recognizer`` 实例（用于 listen_in_background 与可选 Google 识别）。
         - language: 语言代码（仅 Google 识别使用；SenseVoiceSmall 不依赖该参数）。
         - phrase_time_limit: 单段最大录音时长（秒）。
         - stitch_threshold: 两段间隔小于该阈值时，认为可能是同一句，允许触发拼接重识。
         - max_stitch_duration: 拼接后的最长语音时长（秒），防止无限拼接导致延迟/开销过大。
-        - overlap_ms: 仅对 SenseVoiceSmall 生效；把上一段末尾 `overlap_ms` 的 PCM 叠加到下一段开头以降低边界漏字。
-        - min_rms: 仅对 SenseVoiceSmall 生效；静音门限（RMS），低于阈值的片段视为底噪并跳过识别，降低“没说话也出词”的误触发。
-        - engine: 选择识别引擎（`AsrEngine.SENSEVOICE_SMALL` 或 `AsrEngine.GOOGLE`）。
+        - overlap_ms: 仅对 SenseVoiceSmall 生效；把上一段末尾 ``overlap_ms`` 的 PCM 叠加到下一段开头以降低边界漏字。
+        - min_rms: 仅对 SenseVoiceSmall 生效；静音门限（RMS），低于阈值的片段视为底噪并跳过识别，降低"没说话也出词"的误触发。
+        - engine: 选择识别引擎（``AsrEngine.SENSEVOICE_SMALL`` 或 ``AsrEngine.GOOGLE``）。
         - local_model_dir: 本地模型目录（SenseVoiceSmall 使用；None 时使用默认缓存目录）。
         - strip_trailing_period: 是否自动去除识别结果末尾的句号/句点（默认开启）。
         """
@@ -93,13 +96,20 @@ class BackgroundSTT:
         self.worker_thread: Optional[threading.Thread] = None
         self.stop_listening: Optional[Callable[..., None]] = None
 
-        # 拼接相关状态
+        # 拼接相关状态（仅由 worker 线程读写，通过 _stitch_lock 保护以确保 stop() 安全）
+        self._stitch_lock: threading.Lock = threading.Lock()
         self._last_audio: Optional[sr.AudioData] = None
         self._last_audio_end_time: float = 0.0
         self._overlap_tail: bytes = b""
         self._overlap_sample_rate: int = 0
         self._overlap_sample_width: int = 0
         self._last_voiced_time: float = 0.0
+
+        # 回调引用（由 start_worker 设置）
+        self._on_status: Optional[Callable[[str], None]] = None
+        self._on_result: Optional[Callable[[str, bool], None]] = None
+        self._on_unintelligible: Optional[Callable[[], None]] = None
+        self._on_request_error: Optional[Callable[[Exception], None]] = None
 
         # 初始化本地引擎
         self.local_engine: Optional[object] = None
@@ -115,9 +125,28 @@ class BackgroundSTT:
                 logger.warning("本地引擎初始化失败: %s，回退到 Google API。", e)
                 self.engine = AsrEngine.GOOGLE
 
+    # ── context manager ──────────────────────────────────────────
+
+    def __enter__(self) -> "BackgroundSTT":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.stop()
+
+    # ── 拼接状态管理 ─────────────────────────────────────────────
+
+    def _reset_stitch_state(self) -> None:
+        """重置拼接相关状态，避免脏数据污染下一句。"""
+        with self._stitch_lock:
+            self._last_audio = None
+            self._overlap_tail = b""
+            self._overlap_sample_rate = 0
+            self._overlap_sample_width = 0
+
+    # ── 音频采集回调 ─────────────────────────────────────────────
+
     def _on_phrase(self, recognizer_inner: sr.Recognizer, audio: sr.AudioData) -> None:
         try:
-            # 记录收到音频的时间戳
             now = time.time()
             self.audio_queue.put_nowait((audio, now))
         except Exception:
@@ -128,154 +157,216 @@ class BackgroundSTT:
             mic, self._on_phrase, phrase_time_limit=self.phrase_time_limit
         )
 
+    # ── 静音过滤 ─────────────────────────────────────────────────
+
+    def _is_silence(self, raw_data: bytes, sample_width: int) -> bool:
+        """判断音频片段是否为静音/底噪（RMS 低于阈值）。
+
+        SenseVoiceSmall 在纯静音/底噪时也可能"幻觉输出"（如单个标点、短英文词），
+        这里用 RMS 能量阈值做一个简单 VAD：低能量片段不送入模型。
+        """
+        return _rms(raw_data, sample_width) < self.min_rms
+
+    # ── 拼接逻辑 ─────────────────────────────────────────────────
+
+    def _try_stitch(
+        self, current_audio: sr.AudioData, capture_time: float
+    ) -> tuple[Optional[sr.AudioData], bool, Optional[float]]:
+        """尝试将当前音频与上一段拼接。
+
+        返回：
+            (stitched_audio_or_None, is_stitched, delta)
+        """
+        with self._stitch_lock:
+            if self._last_audio is None:
+                return None, False, None
+
+            delta = capture_time - self._last_audio_end_time
+            if delta >= self.stitch_threshold:
+                return None, False, delta
+
+            # 预判拼接后的时长
+            prev_duration = (
+                len(self._last_audio.frame_data)
+                / self._last_audio.sample_rate
+                / self._last_audio.sample_width
+            )
+            curr_duration = (
+                len(current_audio.frame_data)
+                / current_audio.sample_rate
+                / current_audio.sample_width
+            )
+            if prev_duration + curr_duration > self.max_stitch_duration:
+                return None, False, delta
+
+            # 判定为同一句话被切断且未超时，执行拼接
+            raw_data_prev = self._last_audio.get_raw_data()
+            raw_data_curr = current_audio.get_raw_data()
+            stitched_audio = sr.AudioData(
+                raw_data_prev + raw_data_curr,
+                current_audio.sample_rate,
+                current_audio.sample_width,
+            )
+            return stitched_audio, True, delta
+
+    # ── 识别 ─────────────────────────────────────────────────────
+
+    def _recognize(
+        self,
+        audio_to_recognize: sr.AudioData,
+        raw_current: bytes,
+        sample_rate_current: int,
+        sample_width_current: int,
+        is_stitched: bool,
+        delta: Optional[float],
+    ) -> str:
+        """对音频执行 ASR 识别，返回识别文本。"""
+        if self.engine == AsrEngine.SENSEVOICE_SMALL and self.local_engine is not None:
+            raw_base = audio_to_recognize.get_raw_data()
+            sample_rate = audio_to_recognize.sample_rate
+            sample_width = audio_to_recognize.sample_width
+
+            # 仅在"相邻两段"（delta 较小）且采样参数一致时启用 overlap，避免跨句/跨格式污染。
+            with self._stitch_lock:
+                use_overlap = (
+                    not is_stitched
+                    and self.overlap_ms > 0
+                    and delta is not None
+                    and delta < self.stitch_threshold
+                    and self._overlap_tail
+                    and sample_rate_current == self._overlap_sample_rate
+                    and sample_width_current == self._overlap_sample_width
+                )
+                raw_for_asr = (self._overlap_tail + raw_current) if use_overlap else raw_base
+
+            text = self.local_engine.transcribe(raw_for_asr, sample_rate)  # type: ignore[attr-defined]
+
+            self._save_overlap(raw_current, sample_rate, sample_width)
+            return text
+        else:
+            # 使用 Google API
+            return self.recognizer.recognize_google(  # type: ignore
+                audio_to_recognize, language=self.language
+            )
+
+    def _save_overlap(self, raw_current: bytes, sample_rate: int, sample_width: int) -> None:
+        """保存当前段的尾部 PCM 数据，用于下一段 overlap。"""
+        if self.overlap_ms <= 0:
+            return
+        bytes_per_second = sample_rate * sample_width
+        tail_len = int(bytes_per_second * (self.overlap_ms / 1000.0))
+        with self._stitch_lock:
+            if tail_len > 0:
+                self._overlap_tail = (
+                    raw_current[-tail_len:] if tail_len < len(raw_current) else raw_current
+                )
+                self._overlap_sample_rate = sample_rate
+                self._overlap_sample_width = sample_width
+            else:
+                self._overlap_tail = b""
+
+    # ── Worker 主循环 ────────────────────────────────────────────
+
+    def _worker_loop(self) -> None:
+        """Worker 线程主循环：从队列取音频 → 过滤 → 拼接 → 识别 → 回调。"""
+        while not self.stop_event.is_set():
+            try:
+                item = self.audio_queue.get(timeout=0.5)
+                current_audio, capture_time = item
+            except Empty:
+                continue
+
+            try:
+                self._process_audio(current_audio, capture_time)
+            except sr.UnknownValueError:
+                if self._on_unintelligible:
+                    self._on_unintelligible()
+                self._reset_stitch_state()
+            except sr.RequestError as e:
+                if self._on_request_error:
+                    self._on_request_error(e)
+                self._reset_stitch_state()
+            except Exception as e:
+                if self._on_request_error:
+                    self._on_request_error(e)
+                self._reset_stitch_state()
+            finally:
+                try:
+                    self.audio_queue.task_done()
+                except Exception:
+                    pass
+
+    def _process_audio(self, current_audio: sr.AudioData, capture_time: float) -> None:
+        """处理单段音频：静音过滤 → 拼接 → 识别 → 回调。"""
+        raw_current = b""
+        sample_rate_current = 0
+        sample_width_current = 0
+
+        # 本地引擎：提取 PCM 数据并做静音过滤
+        if self.engine == AsrEngine.SENSEVOICE_SMALL and self.local_engine is not None:
+            raw_current = current_audio.get_raw_data()
+            sample_rate_current = current_audio.sample_rate
+            sample_width_current = current_audio.sample_width
+            if self._is_silence(raw_current, sample_width_current):
+                with self._stitch_lock:
+                    self._last_audio = None
+                    self._last_audio_end_time = capture_time
+                return
+
+        if self._on_status:
+            self._on_status("recognizing")
+
+        # 1. 尝试拼接
+        stitched_audio, is_stitched, delta = self._try_stitch(current_audio, capture_time)
+
+        # 2. 识别（拼接成功则识别拼接后的音频，否则识别当前段）
+        audio_to_recognize = stitched_audio if is_stitched and stitched_audio else current_audio
+        text = self._recognize(
+            audio_to_recognize, raw_current,
+            sample_rate_current, sample_width_current,
+            is_stitched, delta,
+        )
+
+        # 3. 结果处理与回调
+        with self._stitch_lock:
+            if is_stitched:
+                if self._on_result:
+                    self._on_result(text, True)  # True = is_correction
+                self._last_audio = stitched_audio
+            else:
+                if self._on_result:
+                    self._on_result(text, False)  # False = new sentence
+                self._last_audio = current_audio
+            self._last_audio_end_time = capture_time
+            self._last_voiced_time = capture_time
+
+    # ── 公共控制接口 ─────────────────────────────────────────────
+
     def start_worker(
         self,
         on_status: Callable[[str], None],
-        on_result: Callable[[str, bool], None],  # changed: (text, is_correction)
+        on_result: Callable[[str, bool], None],
         on_unintelligible: Callable[[], None],
         on_request_error: Callable[[Exception], None],
     ) -> None:
-        def worker() -> None:
-            while not self.stop_event.is_set():
-                try:
-                    # 获取新音频
-                    item = self.audio_queue.get(timeout=0.5)
-                    current_audio, capture_time = item
-                except Empty:
-                    continue
+        """启动 worker 线程，开始消费音频队列。
 
-                try:
-                    raw_current = b""
-                    sample_rate_current = 0
-                    sample_width_current = 0
-                    if self.engine == AsrEngine.SENSEVOICE_SMALL and self.local_engine is not None:
-                        raw_current = current_audio.get_raw_data()
-                        sample_rate_current = current_audio.sample_rate
-                        sample_width_current = current_audio.sample_width
-                        rms = _rms(raw_current, sample_width_current)
-                        # SenseVoiceSmall 在纯静音/底噪时也可能“幻觉输出”（如单个标点、短英文词）。
-                        # 这里用 RMS 能量阈值做一个简单 VAD：低能量片段不送入模型。
-                        if rms < self.min_rms:
-                            self._last_audio = None
-                            self._last_audio_end_time = capture_time
-                            continue
+        参数：
+        - on_status: 状态变化回调（如 ``"recognizing"``）。
+        - on_result: 识别结果回调 ``(text, is_correction)``。
+        - on_unintelligible: 无法识别时的回调。
+        - on_request_error: 请求/引擎异常时的回调。
+        """
+        self._on_status = on_status
+        self._on_result = on_result
+        self._on_unintelligible = on_unintelligible
+        self._on_request_error = on_request_error
 
-                    if on_status:
-                        on_status("recognizing")
-
-                    # 1. 尝试拼接逻辑
-                    stitched_audio = None
-                    is_stitched = False
-                    delta: Optional[float] = None
-
-                    if self._last_audio is not None:
-                        # 计算时间差：本次捕获时间 - 上次结束时间（近似）
-                        delta = capture_time - self._last_audio_end_time
-
-                        if delta < self.stitch_threshold:
-                            # 预判拼接后的时长
-                            prev_duration = len(self._last_audio.frame_data) / self._last_audio.sample_rate / self._last_audio.sample_width
-                            curr_duration = len(current_audio.frame_data) / current_audio.sample_rate / current_audio.sample_width
-                            total_duration = prev_duration + curr_duration
-
-                            if total_duration <= self.max_stitch_duration:
-                                # 判定为同一句话被切断且未超时，执行拼接
-                                # 获取原始字节数据
-                                raw_data_prev = self._last_audio.get_raw_data()
-                                raw_data_curr = current_audio.get_raw_data()
-                                # 拼接字节流
-                                new_data = raw_data_prev + raw_data_curr
-                                # 创建新的 AudioData 对象
-                                stitched_audio = sr.AudioData(
-                                    new_data,
-                                    current_audio.sample_rate,
-                                    current_audio.sample_width,
-                                )
-                                is_stitched = True
-
-                    # 2. 识别
-                    # 如果拼接了，优先识别拼接后的完整音频
-                    audio_to_recognize = stitched_audio if is_stitched and stitched_audio else current_audio
-
-                    text = ""
-                    if self.engine == AsrEngine.SENSEVOICE_SMALL and self.local_engine is not None:
-                        raw_base = audio_to_recognize.get_raw_data()
-                        sample_rate = audio_to_recognize.sample_rate
-                        sample_width = audio_to_recognize.sample_width
-
-                        use_overlap = (
-                            not is_stitched
-                            and self.overlap_ms > 0
-                            and delta is not None
-                            and delta < self.stitch_threshold
-                            and self._overlap_tail
-                            and sample_rate_current == self._overlap_sample_rate
-                            and sample_width_current == self._overlap_sample_width
-                        )
-                        # 仅在“相邻两段”（delta 较小）且采样参数一致时启用 overlap，避免跨句/跨格式污染。
-                        raw_for_asr = (self._overlap_tail + raw_current) if use_overlap else raw_base
-
-                        text = self.local_engine.transcribe(raw_for_asr, sample_rate)  # type: ignore[attr-defined]
-
-                        if self.overlap_ms > 0:
-                            bytes_per_second = sample_rate * sample_width
-                            tail_len = int(bytes_per_second * (self.overlap_ms / 1000.0))
-                            if tail_len > 0:
-                                # 保存当前段的尾巴，用于下一段 overlap；尾巴长度按 ms 转为字节数。
-                                self._overlap_tail = raw_current[-tail_len:] if tail_len < len(raw_current) else raw_current
-                                self._overlap_sample_rate = sample_rate
-                                self._overlap_sample_width = sample_width
-                            else:
-                                self._overlap_tail = b""
-                        self._last_voiced_time = capture_time
-                    else:
-                        # 使用 Google API
-                        text = self.recognizer.recognize_google(audio_to_recognize, language=self.language)  # type: ignore
-
-                    # 3. 结果处理与回调
-                    if is_stitched:
-                        # 这是一个修正结果，通知 UI 覆盖上一条
-                        on_result(text, True)  # True = is_correction
-                        # 拼接后的结果作为“最新完整句”，继续参与后续拼接。
-                        self._last_audio = stitched_audio
-                    else:
-                        # 这是一个新句子
-                        on_result(text, False)  # False = new sentence
-                        self._last_audio = current_audio
-
-                    # 更新结束时间
-                    self._last_audio_end_time = capture_time
-
-                except sr.UnknownValueError:
-                    on_unintelligible()
-                    # 无法识别时，重置拼接状态，避免脏数据污染下一句
-                    self._last_audio = None
-                    self._overlap_tail = b""
-                    self._overlap_sample_rate = 0
-                    self._overlap_sample_width = 0
-                except sr.RequestError as e:
-                    on_request_error(e)
-                    self._last_audio = None
-                    self._overlap_tail = b""
-                    self._overlap_sample_rate = 0
-                    self._overlap_sample_width = 0
-                except Exception as e:
-                    # 捕获其他异常（如本地引擎报错）
-                    on_request_error(e)
-                    self._last_audio = None
-                    self._overlap_tail = b""
-                    self._overlap_sample_rate = 0
-                    self._overlap_sample_width = 0
-                finally:
-                    try:
-                        self.audio_queue.task_done()
-                    except Exception:
-                        pass
-
-        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker_thread.start()
 
     def stop(self) -> None:
+        """停止后台监听和 worker 线程。可安全重复调用。"""
         self.stop_event.set()
         if self.stop_listening:
             try:
