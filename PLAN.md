@@ -24,7 +24,7 @@
 
 ## 当前现状（已完成）
 
-- 已有库结构：`src/voicetyper/`（audio / recognition / models）与 `examples/`
+- 已有库结构：`src/voicetyper/`（audio / recognition / models / recorder / monitor / downloads）与 `examples/`
 - `BackgroundSTT` 支持分段识别 + 拼接修正
 - 默认使用本地 SenseVoiceSmall（sherpa-onnx），失败回退 Google
 - ASR 引擎选择已改为 `AsrEngine`（Enum），便于后续扩展更多模型
@@ -143,11 +143,12 @@
 - [x] 为 `BackgroundSTT` 添加 `__enter__` / `__exit__` context manager 支持
 - [x] 添加 `threading.Lock`（`_stitch_lock`）保护 `_last_audio` 等拼接状态的跨线程访问
 
-### 第四步：提取 PushToTalkRecorder 到库中，解耦 speech_recognition 依赖
+### 第四步：提取 PushToTalkRecorder 到库中，消除 examples 重复代码 ✅
 
-- [ ] 将 `PushToTalkRecorder` 和 `RecorderConfig` 从 examples 提取到 `src/voicetyper/recorder.py`
-- [ ] 消除 `demo_push_to_talk.py` 和 `demo_push_to_talk_ui.py` 中的重复代码，改为从库导入
-- [ ] 评估 `BackgroundSTT` 对 `speech_recognition` 类型的耦合，考虑接受通用音频源接口
+- [x] 新建 `src/voicetyper/recorder.py`，包含 `RecorderConfig`（dataclass）和 `PushToTalkRecorder`（带 context manager）
+- [x] 在 `__init__.py` 中导出 `PushToTalkRecorder` 和 `RecorderConfig`
+- [x] `demo_push_to_talk.py` 和 `demo_push_to_talk_ui.py` 删除内联定义，改为从库导入
+- [ ] 评估 `BackgroundSTT` 对 `speech_recognition` 类型的耦合，考虑接受通用音频源接口（留待后续迭代）
 
 ### 第五步：改用 editable install，去除 sys.path hack，补充单元测试
 

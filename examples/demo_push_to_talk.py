@@ -2,11 +2,9 @@ import logging
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from typing import Optional
 
 import argparse
-import pyaudio
 import signal
 import speech_recognition as sr
 from colorama import init, Fore, Style
@@ -18,81 +16,10 @@ import demo_consts
 
 sys.path.append(demo_consts.SRC_DIR)
 
-from voicetyper import AudioDeviceResolver, AsrEngine  # noqa: E402
+from voicetyper import AudioDeviceResolver, AsrEngine, PushToTalkRecorder, RecorderConfig  # noqa: E402
 from voicetyper.models import SenseVoiceSmallEngine  # noqa: E402
 
 init(autoreset=True)
-
-
-@dataclass
-class RecorderConfig:
-    rate: int = 16000
-    channels: int = 1
-    frames_per_buffer: int = 1024
-    sample_width: int = 2
-
-
-class PushToTalkRecorder:
-    def __init__(self, device_index: Optional[int], config: RecorderConfig) -> None:
-        self.device_index = device_index
-        self.config = config
-        self._pa = pyaudio.PyAudio()
-        self._stream: Optional[pyaudio.Stream] = None
-        self._frames: list[bytes] = []
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._frames = []
-        self._stop_event.clear()
-        self._stream = self._pa.open(
-            format=pyaudio.paInt16,
-            channels=self.config.channels,
-            rate=self.config.rate,
-            input=True,
-            input_device_index=self.device_index,
-            frames_per_buffer=self.config.frames_per_buffer,
-        )
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def _loop(self) -> None:
-        assert self._stream is not None
-        while not self._stop_event.is_set():
-            try:
-                data = self._stream.read(self.config.frames_per_buffer, exception_on_overflow=False)
-            except Exception:
-                continue
-            self._frames.append(data)
-
-    def stop(self) -> bytes:
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=1.0)
-        if self._stream:
-            try:
-                self._stream.stop_stream()
-            except Exception:
-                pass
-            try:
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
-        return b"".join(self._frames)
-
-    def close(self) -> None:
-        try:
-            if self._stream:
-                self._stream.close()
-        except Exception:
-            pass
-        try:
-            self._pa.terminate()
-        except Exception:
-            pass
 
 
 def transcribe_google(recognizer: sr.Recognizer, pcm16: bytes, rate: int, language: str) -> str:
