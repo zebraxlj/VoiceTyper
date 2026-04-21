@@ -1,3 +1,4 @@
+import logging
 import sys
 import threading
 import time
@@ -10,6 +11,8 @@ import signal
 import speech_recognition as sr
 from colorama import init, Fore, Style
 from pynput import keyboard
+
+logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 
 import demo_consts
 

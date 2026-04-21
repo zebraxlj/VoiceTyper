@@ -1,8 +1,11 @@
+import logging
 import os
 import re
 from typing import Optional
 
 import sherpa_onnx
+
+logger = logging.getLogger(__name__)
 
 from .downloads import (
     download_file,
@@ -86,7 +89,7 @@ class SenseVoiceSmallEngine:
         if os.path.exists(self.model_path):
             return
 
-        print(f"正在下载 SenseVoiceSmall 模型到 {self.base_dir} ...")
+        logger.info("正在下载 SenseVoiceSmall 模型到 %s ...", self.base_dir)
         os.makedirs(self.base_dir, exist_ok=True)
 
         tar_path = os.path.join(self.base_dir, "model.tar.bz2")
@@ -98,8 +101,7 @@ class SenseVoiceSmallEngine:
                 tar_path,
                 on_progress=make_console_download_progress("下载中"),
             )
-            print()
-            print("下载完成，正在解压...")
+            logger.info("下载完成，正在解压...")
 
             extract_tar_bz2(
                 tar_path,
@@ -107,11 +109,9 @@ class SenseVoiceSmallEngine:
                 on_progress=make_console_count_progress("解压中"),
                 safe=True,
             )
-            print()
-
-            print("解压完成。")
+            logger.info("解压完成。")
         except Exception as e:
-            print(f"下载或解压模型失败: {e}")
+            logger.error("下载或解压模型失败: %s", e)
             raise
         finally:
             if os.path.exists(tar_path):
@@ -121,19 +121,19 @@ class SenseVoiceSmallEngine:
         """根据 ``self.quantized`` 选择模型文件并初始化 sherpa-onnx 离线识别器。"""
         import time as _time
 
-        print(f"正在加载 SenseVoiceSmall 模型（{self.model_path}）...")
+        logger.info("正在加载 SenseVoiceSmall 模型（%s）...", self.model_path)
         try:
             tokens = os.path.join(self.model_path, "tokens.txt")
 
             if self.quantized:
                 model = os.path.join(self.model_path, "model.int8.onnx")
                 if not os.path.exists(model):
-                    print("int8 量化模型不存在，回退到 fp32 全精度模型。")
+                    logger.warning("int8 量化模型不存在，回退到 fp32 全精度模型。")
                     model = os.path.join(self.model_path, "model.onnx")
             else:
                 model = os.path.join(self.model_path, "model.onnx")
                 if not os.path.exists(model):
-                    print("fp32 全精度模型不存在，回退到 int8 量化模型。")
+                    logger.warning("fp32 全精度模型不存在，回退到 int8 量化模型。")
                     model = os.path.join(self.model_path, "model.int8.onnx")
 
             t0 = _time.perf_counter()
@@ -145,9 +145,9 @@ class SenseVoiceSmallEngine:
             )
             elapsed = _time.perf_counter() - t0
             variant = "int8 量化" if self.quantized else "fp32 全精度"
-            print(f"模型加载完成（{variant}），耗时 {elapsed:.2f}s。")
+            logger.info("模型加载完成（%s），耗时 %.2fs。", variant, elapsed)
         except Exception as e:
-            print(f"初始化识别器失败: {e}")
+            logger.error("初始化识别器失败: %s", e)
             raise
 
     def _load_corrections(self, path: str) -> None:
@@ -167,14 +167,14 @@ class SenseVoiceSmallEngine:
                         continue
                     parts = line.split("\t")
                     if len(parts) != 2 or not parts[0] or not parts[1]:
-                        print(f"纠错词表第 {lineno} 行格式错误，已跳过: {line!r}")
+                        logger.warning("纠错词表第 %d 行格式错误，已跳过: %r", lineno, line)
                         continue
                     pattern = re.compile(re.escape(parts[0]), re.IGNORECASE)
                     self._correction_rules.append((pattern, parts[1]))
             if self._correction_rules:
-                print(f"已加载 {len(self._correction_rules)} 条纠错规则（{path}）。")
+                logger.info("已加载 %d 条纠错规则（%s）。", len(self._correction_rules), path)
         except Exception as e:
-            print(f"加载纠错词表失败: {e}")
+            logger.error("加载纠错词表失败: %s", e)
 
     def _apply_corrections(self, text: str) -> str:
         """对识别结果应用纠错替换规则。"""

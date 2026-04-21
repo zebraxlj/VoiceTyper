@@ -1,7 +1,10 @@
+import logging
 import sys
 
 import speech_recognition as sr
 from colorama import init, Fore, Style
+
+logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 
 import demo_consts
 sys.path.append(demo_consts.SRC_DIR)

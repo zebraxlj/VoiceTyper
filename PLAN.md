@@ -128,11 +128,12 @@
 - [x] 删除 `src/demo_speech_recognition.py`（已过时的原型，`AudioDeviceResolver` 和 `BackgroundSTT` 已完整重构到库中，无任何文件引用）
 - [x] 替换 `recognition.py` 中的 `import audioop`（Python 3.11 deprecated、3.13 removed），改用 `struct` 实现等效 `_rms()` 函数
 
-### 第二步：库代码引入 logging，替换所有 print()
+### 第二步：库代码引入 logging，替换所有 print() ✅
 
-- [ ] `models.py`：所有 `print()` 替换为 `logging.getLogger(__name__)` 调用（模型下载进度、加载计时、纠错词表加载等）
-- [ ] `recognition.py`：引擎初始化失败的 `print()` 警告替换为 `logging.warning()`
-- [ ] 让使用方（examples）自行配置 `logging.basicConfig()`，库代码不设置日志格式
+- [x] `models.py`：所有 `print()` 替换为 `logging.getLogger(__name__)` 调用（模型下载进度、加载计时、纠错词表加载等）
+- [x] `recognition.py`：引擎初始化失败的 `print()` 警告替换为 `logging.warning()`
+- [x] 让使用方（examples）自行配置 `logging.basicConfig()`，库代码不设置日志格式
+- [x] `downloads.py` 中的 `make_console_*_progress` 为调用方提供的进度回调（终端 UI 行为），保持 `sys.stdout.write` 不变
 
 ### 第三步：拆分 BackgroundSTT.start_worker，加 context manager 和线程安全
 

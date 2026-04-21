@@ -1,13 +1,15 @@
+import logging
+import math
+import struct
 import threading
 import time
 from enum import Enum
 from queue import Queue, Empty
 from typing import Optional, Callable, Union
 
-import math
-import struct
-
 import speech_recognition as sr
+
+logger = logging.getLogger(__name__)
 
 
 def _rms(data: bytes, sample_width: int) -> int:
@@ -110,8 +112,7 @@ class BackgroundSTT:
                     strip_trailing_period=strip_trailing_period,
                 )
             except Exception as e:
-                print(f"Warning: Failed to initialize local engine: {e}")
-                print("Falling back to Google API.")
+                logger.warning("本地引擎初始化失败: %s，回退到 Google API。", e)
                 self.engine = AsrEngine.GOOGLE
 
     def _on_phrase(self, recognizer_inner: sr.Recognizer, audio: sr.AudioData) -> None:

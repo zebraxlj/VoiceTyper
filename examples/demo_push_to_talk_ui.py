@@ -1,4 +1,5 @@
 import ctypes
+import logging
 import sys
 import threading
 import time
@@ -10,6 +11,8 @@ import re
 import signal
 import tkinter as tk
 from pynput import keyboard as pynput_keyboard
+
+logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 
 import demo_consts
 
