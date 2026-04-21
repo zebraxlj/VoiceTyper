@@ -4,8 +4,27 @@ from enum import Enum
 from queue import Queue, Empty
 from typing import Optional, Callable, Union
 
-import audioop
+import math
+import struct
+
 import speech_recognition as sr
+
+
+def _rms(data: bytes, sample_width: int) -> int:
+    """计算 PCM 音频的 RMS（均方根），替代已废弃的 audioop.rms。"""
+    if not data or sample_width <= 0:
+        return 0
+    # struct 格式：1 字节有符号 / 2 字节小端有符号 / 4 字节小端有符号
+    fmt_char_map = {1: "b", 2: "h", 4: "i"}
+    fmt_char = fmt_char_map.get(sample_width)
+    if fmt_char is None:
+        return 0
+    n_samples = len(data) // sample_width
+    if n_samples == 0:
+        return 0
+    samples = struct.unpack_from(f"<{n_samples}{fmt_char}", data)
+    sum_sq = sum(s * s for s in samples)
+    return int(math.sqrt(sum_sq / n_samples))
 
 
 class AsrEngine(str, Enum):
@@ -132,10 +151,7 @@ class BackgroundSTT:
                         raw_current = current_audio.get_raw_data()
                         sample_rate_current = current_audio.sample_rate
                         sample_width_current = current_audio.sample_width
-                        try:
-                            rms = audioop.rms(raw_current, sample_width_current) if raw_current else 0
-                        except Exception:
-                            rms = 0
+                        rms = _rms(raw_current, sample_width_current)
                         # SenseVoiceSmall 在纯静音/底噪时也可能“幻觉输出”（如单个标点、短英文词）。
                         # 这里用 RMS 能量阈值做一个简单 VAD：低能量片段不送入模型。
                         if rms < self.min_rms:
@@ -267,3 +283,4 @@ class BackgroundSTT:
                 self.stop_listening()
         if self.worker_thread:
             self.worker_thread.join(timeout=1.0)
+

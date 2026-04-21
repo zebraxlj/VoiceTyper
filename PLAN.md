@@ -119,6 +119,41 @@
 - [ ] 引入可选 VAD（Silero VAD / webrtcvad）；当前已先用 RMS 门限做轻量过滤
 - [ ] 添加离线回归测试音频（短句、长句、停顿切段、噪声）
 
+## 代码重构计划
+
+按顺序执行，每步完成后独立提交。
+
+### 第一步：清理遗留代码与废弃 API ✅
+
+- [x] 删除 `src/demo_speech_recognition.py`（已过时的原型，`AudioDeviceResolver` 和 `BackgroundSTT` 已完整重构到库中，无任何文件引用）
+- [x] 替换 `recognition.py` 中的 `import audioop`（Python 3.11 deprecated、3.13 removed），改用 `struct` 实现等效 `_rms()` 函数
+
+### 第二步：库代码引入 logging，替换所有 print()
+
+- [ ] `models.py`：所有 `print()` 替换为 `logging.getLogger(__name__)` 调用（模型下载进度、加载计时、纠错词表加载等）
+- [ ] `recognition.py`：引擎初始化失败的 `print()` 警告替换为 `logging.warning()`
+- [ ] 让使用方（examples）自行配置 `logging.basicConfig()`，库代码不设置日志格式
+
+### 第三步：拆分 BackgroundSTT.start_worker，加 context manager 和线程安全
+
+- [ ] 提取 `_reset_stitch_state()` 方法（当前重复 3 次的状态重置代码块）
+- [ ] 将 148 行的 `worker()` 嵌套函数拆分为独立方法：`_filter_silence()`, `_try_stitch()`, `_recognize()` 等
+- [ ] 为 `BackgroundSTT` 添加 `__enter__` / `__exit__` context manager 支持
+- [ ] 对 `_last_audio` 等跨线程可变状态添加 `threading.Lock` 保护（或明确文档标注线程所有权）
+
+### 第四步：提取 PushToTalkRecorder 到库中，解耦 speech_recognition 依赖
+
+- [ ] 将 `PushToTalkRecorder` 和 `RecorderConfig` 从 examples 提取到 `src/voicetyper/recorder.py`
+- [ ] 消除 `demo_push_to_talk.py` 和 `demo_push_to_talk_ui.py` 中的重复代码，改为从库导入
+- [ ] 评估 `BackgroundSTT` 对 `speech_recognition` 类型的耦合，考虑接受通用音频源接口
+
+### 第五步：改用 editable install，去除 sys.path hack，补充单元测试
+
+- [ ] 配置 `pip install -e .`（或 `uv pip install -e .`），确保 `import voicetyper` 可直接使用
+- [ ] 移除所有 examples 和 tests 中的 `sys.path.append()` hack
+- [ ] 为 `_rms()`、`_apply_corrections`、`_load_corrections`、download retry 逻辑补充单元测试
+- [ ] 为拼接逻辑（stitching）补充单元测试（固定音频输入，验证输出）
+
 ## 已知局限
 
 - SenseVoiceSmall 对英文快速语音识别精度较低（如专有名词被拆散：`SenseVoiceSmall` → `Since voice is small`）
