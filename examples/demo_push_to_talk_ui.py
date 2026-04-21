@@ -96,6 +96,8 @@ def _send_unicode_string(text: str, char_delay: float = 0.01) -> None:
 
 
 class OverlayUI:
+    _DEFAULT_TEXT = "🎤 正在收音"
+
     def __init__(self) -> None:
         self._root = tk.Tk()
         self._root.withdraw()
@@ -120,7 +122,7 @@ class OverlayUI:
 
         self._label = tk.Label(
             frame,
-            text="🎤 正在收音",
+            text=self._DEFAULT_TEXT,
             font=("Segoe UI", 12, "bold"),
             fg="#f6f6f6",
             bg="#121212",
@@ -137,8 +139,12 @@ class OverlayUI:
         y = int(screen_h - height - 40)
         self._root.geometry(f"{width}x{height}+{x}+{y}")
 
-    def show(self) -> None:
+    def show(self, text: Optional[str] = None) -> None:
         def _do_show() -> None:
+            if text is not None:
+                self._label.configure(text=text)
+            else:
+                self._label.configure(text=self._DEFAULT_TEXT)
             self._root.deiconify()
             self._root.lift()
             self._position_bottom_center()
@@ -278,16 +284,6 @@ def main() -> None:
         else:
             print("默认麦克风设备: 未知")
 
-    try:
-        # Load model upfront so first use is fast.
-        model = SenseVoiceSmallEngine(
-            strip_trailing_period=strip_trailing_period,
-            quantized=False,
-        )
-    except Exception as exc:
-        print(f"模型加载失败: {exc}")
-        return
-
     config = RecorderConfig()
     recorder = PushToTalkRecorder(device_index=device_index, config=config)
     ui = OverlayUI()
@@ -300,6 +296,30 @@ def main() -> None:
         except Exception:
             pass
         return
+
+    # ------------------------------------------------------------------
+    # 后台线程加载模型，UI 显示加载状态，避免阻塞主线程
+    # ------------------------------------------------------------------
+    model: Optional[SenseVoiceSmallEngine] = None
+    model_ready = threading.Event()
+
+    def _load_model() -> None:
+        nonlocal model
+        try:
+            m = SenseVoiceSmallEngine(
+                strip_trailing_period=strip_trailing_period,
+                quantized=False,
+            )
+            model = m
+        except Exception as exc:
+            print(f"模型加载失败: {exc}")
+            exit_event.set()
+        finally:
+            model_ready.set()
+            ui.hide()
+
+    ui.show(text="⏳ 模型加载中...")
+    threading.Thread(target=_load_model, daemon=True).start()
 
     recording = False
     ctrl_down = False
@@ -345,6 +365,11 @@ def main() -> None:
             _sync_modifier_state()
             if not _hotkey_active() or not _hotkey_physically_held() or recording:
                 return
+            if not model_ready.is_set():
+                print("模型尚未加载完成，请稍候...")
+                return
+            if model is None:
+                return
             recording = True
             record_start_time = time.time()
         ui.show()
@@ -353,6 +378,9 @@ def main() -> None:
     def transcribe_and_type(pcm16: bytes) -> None:
         # Run ASR, then write to clipboard and current cursor.
         with transcribe_lock:
+            if model is None:
+                print("模型未就绪，跳过识别。")
+                return
             try:
                 text = model.transcribe(pcm16, config.rate).strip()
             except Exception as exc:
