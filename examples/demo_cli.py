@@ -1,15 +1,11 @@
 import logging
-import sys
 
 import speech_recognition as sr
 from colorama import init, Fore, Style
 
+from voicetyper import AudioDeviceResolver, BackgroundSTT, AsrEngine
+
 logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
-
-import demo_consts
-sys.path.append(demo_consts.SRC_DIR)
-
-from voicetyper import AudioDeviceResolver, BackgroundSTT, AsrEngine  # noqa: E402
 
 init(autoreset=True)
 

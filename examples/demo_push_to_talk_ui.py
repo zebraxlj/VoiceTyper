@@ -1,24 +1,20 @@
 import ctypes
 import logging
+import re
+import signal
 import sys
 import threading
 import time
+import tkinter as tk
 from typing import Optional
 
-import re
-import signal
-import tkinter as tk
 from pynput import keyboard as pynput_keyboard
 
+from voicetyper import AudioDeviceResolver, PushToTalkRecorder, RecorderConfig
+from voicetyper.models import SenseVoiceSmallEngine
+from voicetyper.monitor import ResourceMonitor
+
 logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
-
-import demo_consts
-
-sys.path.append(demo_consts.SRC_DIR)
-
-from voicetyper import AudioDeviceResolver, PushToTalkRecorder, RecorderConfig  # noqa: E402
-from voicetyper.models import SenseVoiceSmallEngine  # noqa: E402
-from voicetyper.monitor import ResourceMonitor  # noqa: E402
 
 SHOW_RESOURCE_USAGE = False
 

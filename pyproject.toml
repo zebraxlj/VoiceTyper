@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "voicetyper"
 version = "0.1.0"
-description = "Add your description here"
+description = "可复用的离线语音输入库，基于 SenseVoiceSmall (sherpa-onnx)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,3 +19,6 @@ dependencies = [
     "sherpa-onnx==1.10.45",
     "speechrecognition>=3.14.6",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]

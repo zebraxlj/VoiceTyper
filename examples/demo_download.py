@@ -1,14 +1,9 @@
 import argparse
 import os
-import sys
 from typing import Optional
 from urllib.parse import urlparse
 
-import demo_consts
-
-sys.path.append(demo_consts.SRC_DIR)
-
-from voicetyper.downloads import (  # noqa: E402
+from voicetyper.downloads import (
     download_file,
     extract_tar_bz2,
     make_console_count_progress,

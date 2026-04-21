@@ -150,12 +150,15 @@
 - [x] `demo_push_to_talk.py` 和 `demo_push_to_talk_ui.py` 删除内联定义，改为从库导入
 - [ ] 评估 `BackgroundSTT` 对 `speech_recognition` 类型的耦合，考虑接受通用音频源接口（留待后续迭代）
 
-### 第五步：改用 editable install，去除 sys.path hack，补充单元测试
+### 第五步：改用 editable install，去除 sys.path hack ✅
 
-- [ ] 配置 `pip install -e .`（或 `uv pip install -e .`），确保 `import voicetyper` 可直接使用
-- [ ] 移除所有 examples 和 tests 中的 `sys.path.append()` hack
-- [ ] 为 `_rms()`、`_apply_corrections`、`_load_corrections`、download retry 逻辑补充单元测试
-- [ ] 为拼接逻辑（stitching）补充单元测试（固定音频输入，验证输出）
+- [x] `pyproject.toml` 添加 `[build-system]` 和 `[tool.setuptools.packages.find]`（src 布局）
+- [x] `uv sync` 自动以 editable 模式安装 `voicetyper`，无需额外命令
+- [x] 移除所有 examples 和 tests 中的 `sys.path.append()` hack 和 `demo_consts` 导入
+- [x] 删除 `examples/demo_consts.py`（不再需要）
+- [x] 更新 `README.md`，写明 clone 后的安装步骤（只需 `uv sync`）
+- [ ] 为 `_rms()`、`_apply_corrections`、`_load_corrections`、download retry 逻辑补充单元测试（留待后续）
+- [ ] 为拼接逻辑（stitching）补充单元测试（固定音频输入，验证输出）（留待后续）
 
 ## 已知局限
 

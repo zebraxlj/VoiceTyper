@@ -1,23 +1,18 @@
+import argparse
 import logging
-import sys
+import signal
 import threading
 import time
 from typing import Optional
 
-import argparse
-import signal
 import speech_recognition as sr
 from colorama import init, Fore, Style
 from pynput import keyboard
 
+from voicetyper import AudioDeviceResolver, AsrEngine, PushToTalkRecorder, RecorderConfig
+from voicetyper.models import SenseVoiceSmallEngine
+
 logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
-
-import demo_consts
-
-sys.path.append(demo_consts.SRC_DIR)
-
-from voicetyper import AudioDeviceResolver, AsrEngine, PushToTalkRecorder, RecorderConfig  # noqa: E402
-from voicetyper.models import SenseVoiceSmallEngine  # noqa: E402
 
 init(autoreset=True)
 

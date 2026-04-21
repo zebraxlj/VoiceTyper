@@ -1,7 +1,3 @@
-import os
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '../src'))
-
 import voicetyper
 
 
@@ -9,6 +5,9 @@ def test_imports():
     assert hasattr(voicetyper, 'AudioDeviceResolver')
     assert hasattr(voicetyper, 'BackgroundSTT')
     assert hasattr(voicetyper, 'AsrEngine')
+    assert hasattr(voicetyper, 'PushToTalkRecorder')
+    assert hasattr(voicetyper, 'RecorderConfig')
+    assert hasattr(voicetyper, 'ResourceMonitor')
     print("Imports successful!")
 
 
