@@ -1,4 +1,5 @@
 import logging
+import sys
 
 import speech_recognition as sr
 from colorama import init, Fore, Style
