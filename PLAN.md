@@ -101,64 +101,36 @@
 - 无语音时“幻觉输出”（标点/短英文词）
   - 对策：增加静音门限（RMS 过滤）或引入独立 VAD
 
+## Feature 设计文档
+
+详细设计拆分到独立文件，避免 PLAN.md 膨胀。AI 按需读取。
+
+- [唤醒词触发录音转文字](.opencode/features/wake-word.md) — KWS 唤醒 → PyAudio 录音 → RMS 断句 → SenseVoiceSmall 转写
+
 ## 待办（与代码 TODO 同步维护）
 
+> 已完成的条目定期清理，只保留未完成项。
+
 - [ ] 修复 sherpa-onnx 重采样日志过长问题（强制 16kHz 录音或屏蔽 C++ 日志）
-- [x] 增加 Push-to-talk 示例（长按左 Ctrl 收音，松开识别）
-- [x] 增加 UI push-to-talk 示例（悬浮窗 + 剪贴板 + 光标输入 + 托盘退出）
-- [x] `SenseVoiceSmallEngine` 参数化：量化开关、线程数、末尾标点去除开关
-- [x] 基于 TSV 词表的识别结果纠错（`corrections.tsv`）
-- [x] UI push-to-talk 热键防误触（Win32 物理按键状态校验）
-- [x] 模型加载计时
-- [x] 增加轻量资源监控器（`ResourceMonitor`，支持 CPU/RAM 与可选 GPU 显存输出）
-- [x] 文本输入绕过输入法（Win32 `SendInput` + `KEYEVENTF_UNICODE`）
 - [ ] 将文本输入方式抽象为跨平台接口（当前仅 Windows `SendInput`；需支持 Linux X11/Wayland、macOS Quartz）
 - [ ] 引入 LLM 后处理纠错（可选，用于修正专有名词/英文快速语音等场景；支持云端 API 或本地模型）
 - [ ] 增加依赖自检命令（打印 Python 位数、VC++ 版本、sherpa-onnx 版本、模型文件完整性）
 - [ ] 增加配置层（例如 `VoiceTyperConfig`：模型目录、阈值、引擎选择）
 - [ ] 引入可选 VAD（Silero VAD / webrtcvad）；当前已先用 RMS 门限做轻量过滤
 - [ ] 添加离线回归测试音频（短句、长句、停顿切段、噪声）
+- [ ] 补充单元测试（`_rms()`、corrections、download retry、stitching）
+- [ ] 评估 `BackgroundSTT` 对 `speech_recognition` 类型的耦合，考虑接受通用音频源接口
+- [ ] 唤醒词触发转写：新建 `src/voicetyper/kws.py`（KWS 模型管理 + 流式检测封装）
+- [ ] 唤醒词触发转写：新建 `examples/demo_wake_word.py`（终端版 MVP）
+- [ ] 唤醒词触发转写：UI 版（tkinter 悬浮窗 + 托盘，Phase 2）
 
-## 代码重构计划
+## 已完成的代码重构（归档）
 
-按顺序执行，每步完成后独立提交。
-
-### 第一步：清理遗留代码与废弃 API ✅
-
-- [x] 删除 `src/demo_speech_recognition.py`（已过时的原型，`AudioDeviceResolver` 和 `BackgroundSTT` 已完整重构到库中，无任何文件引用）
-- [x] 替换 `recognition.py` 中的 `import audioop`（Python 3.11 deprecated、3.13 removed），改用 `struct` 实现等效 `_rms()` 函数
-
-### 第二步：库代码引入 logging，替换所有 print() ✅
-
-- [x] `models.py`：所有 `print()` 替换为 `logging.getLogger(__name__)` 调用（模型下载进度、加载计时、纠错词表加载等）
-- [x] `recognition.py`：引擎初始化失败的 `print()` 警告替换为 `logging.warning()`
-- [x] 让使用方（examples）自行配置 `logging.basicConfig()`，库代码不设置日志格式
-- [x] `downloads.py` 中的 `make_console_*_progress` 为调用方提供的进度回调（终端 UI 行为），保持 `sys.stdout.write` 不变
-
-### 第三步：拆分 BackgroundSTT.start_worker，加 context manager 和线程安全 ✅
-
-- [x] 提取 `_reset_stitch_state()` 方法（消除 3 处重复的状态重置代码块）
-- [x] 将 148 行的 `worker()` 嵌套函数拆分为实例方法：`_worker_loop()`, `_process_audio()`, `_is_silence()`, `_try_stitch()`, `_recognize()`, `_save_overlap()`
-- [x] 回调引用存为实例属性（`_on_status` 等），消除嵌套函数闭包捕获
-- [x] 为 `BackgroundSTT` 添加 `__enter__` / `__exit__` context manager 支持
-- [x] 添加 `threading.Lock`（`_stitch_lock`）保护 `_last_audio` 等拼接状态的跨线程访问
-
-### 第四步：提取 PushToTalkRecorder 到库中，消除 examples 重复代码 ✅
-
-- [x] 新建 `src/voicetyper/recorder.py`，包含 `RecorderConfig`（dataclass）和 `PushToTalkRecorder`（带 context manager）
-- [x] 在 `__init__.py` 中导出 `PushToTalkRecorder` 和 `RecorderConfig`
-- [x] `demo_push_to_talk.py` 和 `demo_push_to_talk_ui.py` 删除内联定义，改为从库导入
-- [ ] 评估 `BackgroundSTT` 对 `speech_recognition` 类型的耦合，考虑接受通用音频源接口（留待后续迭代）
-
-### 第五步：改用 editable install，去除 sys.path hack ✅
-
-- [x] `pyproject.toml` 添加 `[build-system]` 和 `[tool.setuptools.packages.find]`（src 布局）
-- [x] `uv sync` 自动以 editable 模式安装 `voicetyper`，无需额外命令
-- [x] 移除所有 examples 和 tests 中的 `sys.path.append()` hack 和 `demo_consts` 导入
-- [x] 删除 `examples/demo_consts.py`（不再需要）
-- [x] 更新 `README.md`，写明 clone 后的安装步骤（只需 `uv sync`）
-- [ ] 为 `_rms()`、`_apply_corrections`、`_load_corrections`、download retry 逻辑补充单元测试（留待后续）
-- [ ] 为拼接逻辑（stitching）补充单元测试（固定音频输入，验证输出）（留待后续）
+1. ✅ 清理遗留代码与废弃 API（删除旧原型，`audioop` → `struct` 实现 `_rms()`）
+2. ✅ 库代码引入 logging，替换所有 `print()`
+3. ✅ 拆分 `BackgroundSTT.start_worker`，加 context manager 和线程安全
+4. ✅ 提取 `PushToTalkRecorder` 到库中，消除 examples 重复代码
+5. ✅ 改用 editable install（`uv sync`），去除 `sys.path` hack
 
 ## 已知局限
 
