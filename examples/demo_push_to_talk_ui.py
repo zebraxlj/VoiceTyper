@@ -370,7 +370,7 @@ def main() -> None:
 
     print("=== UI Push-to-Talk Demo ===")
     print(
-        "Hold left left Shift+Win to record, release to transcribe and type. Use tray menu to exit."
+        "Hold left Shift+Win to record, release to transcribe and type. Use tray menu to exit."
     )
 
     with AudioDeviceResolver() as resolver:
@@ -418,7 +418,6 @@ def main() -> None:
     threading.Thread(target=_load_model, daemon=True).start()
 
     recording = False
-    ctrl_down = False
     shift_down = False
     win_down = False
     last_down_time = 0.0
@@ -426,40 +425,36 @@ def main() -> None:
     start_timer: Optional[threading.Timer] = None
     state_lock = threading.Lock()
 
-    # Windows 虚拟键码
-    VK_LSHIFT = 0xA0
-    VK_LWIN = 0x5B
-
-    def _is_key_physically_pressed(vk: int) -> bool:
-        """通过 Win32 GetAsyncKeyState 查询按键是否真的被按着。"""
-        # 最高位 (0x8000) 表示此刻按键处于按下状态
-        return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
-
     def _hotkey_active() -> bool:
         return shift_down and win_down
-        # return ctrl_down or (shift_down and win_down)
 
-    def _hotkey_physically_held() -> bool:
-        """在关键时刻用 Win32 API 二次确认两个键是否真的同时按着。"""
-        return _is_key_physically_pressed(VK_LSHIFT) and _is_key_physically_pressed(
-            VK_LWIN
-        )
+    if sys.platform == "win32":
+        VK_LSHIFT = 0xA0
+        VK_LWIN = 0x5B
 
-    def _sync_modifier_state() -> None:
-        """根据物理按键状态修正软件追踪的标志位，防止漏掉 release 事件导致状态残留。"""
-        nonlocal shift_down, win_down
-        if shift_down and not _is_key_physically_pressed(VK_LSHIFT):
-            shift_down = False
-        if win_down and not _is_key_physically_pressed(VK_LWIN):
-            win_down = False
+        def _is_key_physically_pressed(vk: int) -> bool:
+            return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
+
+        def _sync_modifier_state() -> None:
+            nonlocal shift_down, win_down
+            if shift_down and not _is_key_physically_pressed(VK_LSHIFT):
+                shift_down = False
+            if win_down and not _is_key_physically_pressed(VK_LWIN):
+                win_down = False
+    else:
+        def _sync_modifier_state() -> None:
+            pass
 
     def start_recording() -> None:
-        # Called after hold threshold is met.
         nonlocal recording, record_start_time
         with state_lock:
-            # 用物理按键状态做最终确认，防止 release 事件被系统吞掉后状态残留
             _sync_modifier_state()
-            if not _hotkey_active() or not _hotkey_physically_held() or recording:
+            if not _hotkey_active() or recording:
+                return
+            if sys.platform == "win32" and not (
+                _is_key_physically_pressed(VK_LSHIFT)
+                and _is_key_physically_pressed(VK_LWIN)
+            ):
                 return
             if not model_ready.is_set():
                 print("模型尚未加载完成，请稍候...")
@@ -496,12 +491,8 @@ def main() -> None:
     def on_press(key) -> None:
         # Start hold timer on left Shift+Win press.
         # Guard against key auto-repeat: only react to genuine new presses.
-        nonlocal ctrl_down, shift_down, win_down, start_timer, last_down_time
-        if key == pynput_keyboard.Key.ctrl_l:
-            if ctrl_down:
-                return  # auto-repeat, ignore
-            ctrl_down = True
-        elif key == pynput_keyboard.Key.shift_l:
+        nonlocal shift_down, win_down, start_timer, last_down_time
+        if key == pynput_keyboard.Key.shift_l:
             if shift_down:
                 return  # auto-repeat, ignore
             shift_down = True
@@ -527,10 +518,8 @@ def main() -> None:
 
     def on_release(key):
         # On release, stop recording and kick off transcription.
-        nonlocal recording, ctrl_down, shift_down, win_down, start_timer
-        if key == pynput_keyboard.Key.ctrl_l:
-            ctrl_down = False
-        elif key == pynput_keyboard.Key.shift_l:
+        nonlocal recording, shift_down, win_down, start_timer
+        if key == pynput_keyboard.Key.shift_l:
             shift_down = False
         elif key == pynput_keyboard.Key.cmd_l:
             win_down = False
