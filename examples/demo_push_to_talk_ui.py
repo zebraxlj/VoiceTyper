@@ -19,15 +19,12 @@ logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 SHOW_RESOURCE_USAGE = False
 
 
-def _send_unicode_string(text: str, char_delay: float = 0.01) -> None:
-    """通过 Win32 SendInput 逐字符发送 Unicode 输入事件，绕过输入法。"""
-    import time as _time
+if sys.platform == "win32":
+    _INPUT_KEYBOARD = 1
+    _KEYEVENTF_UNICODE = 0x0004
+    _KEYEVENTF_KEYUP = 0x0002
 
-    INPUT_KEYBOARD = 1
-    KEYEVENTF_UNICODE = 0x0004
-    KEYEVENTF_KEYUP = 0x0002
-
-    class MOUSEINPUT(ctypes.Structure):
+    class _MOUSEINPUT(ctypes.Structure):
         _fields_ = [
             ("dx", ctypes.c_long),
             ("dy", ctypes.c_long),
@@ -37,7 +34,7 @@ def _send_unicode_string(text: str, char_delay: float = 0.01) -> None:
             ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
         ]
 
-    class KEYBDINPUT(ctypes.Structure):
+    class _KEYBDINPUT(ctypes.Structure):
         _fields_ = [
             ("wVk", ctypes.c_ushort),
             ("wScan", ctypes.c_ushort),
@@ -46,7 +43,7 @@ def _send_unicode_string(text: str, char_delay: float = 0.01) -> None:
             ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
         ]
 
-    class HARDWAREINPUT(ctypes.Structure):
+    class _HARDWAREINPUT(ctypes.Structure):
         _fields_ = [
             ("uMsg", ctypes.c_ulong),
             ("wParamL", ctypes.c_ushort),
@@ -55,44 +52,52 @@ def _send_unicode_string(text: str, char_delay: float = 0.01) -> None:
 
     class _INPUT_UNION(ctypes.Union):
         _fields_ = [
-            ("mi", MOUSEINPUT),
-            ("ki", KEYBDINPUT),
-            ("hi", HARDWAREINPUT),
+            ("mi", _MOUSEINPUT),
+            ("ki", _KEYBDINPUT),
+            ("hi", _HARDWAREINPUT),
         ]
 
-    class INPUT(ctypes.Structure):
+    class _INPUT(ctypes.Structure):
         _fields_ = [
             ("type", ctypes.c_ulong),
             ("union", _INPUT_UNION),
         ]
 
-    SendInput = ctypes.windll.user32.SendInput
-    SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
-    SendInput.restype = ctypes.c_uint
+    _SendInput = ctypes.windll.user32.SendInput
+    _SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(_INPUT), ctypes.c_int]
+    _SendInput.restype = ctypes.c_uint
 
-    for ch in text:
-        code = ord(ch)
-        # key down
-        inp_down = INPUT()
-        inp_down.type = INPUT_KEYBOARD
-        inp_down.union.ki.wVk = 0
-        inp_down.union.ki.wScan = code
-        inp_down.union.ki.dwFlags = KEYEVENTF_UNICODE
-        inp_down.union.ki.time = 0
-        inp_down.union.ki.dwExtraInfo = None
-        # key up
-        inp_up = INPUT()
-        inp_up.type = INPUT_KEYBOARD
-        inp_up.union.ki.wVk = 0
-        inp_up.union.ki.wScan = code
-        inp_up.union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-        inp_up.union.ki.time = 0
-        inp_up.union.ki.dwExtraInfo = None
+    def _send_text(text: str, char_delay: float = 0.01) -> None:
+        """Type text via Win32 SendInput with KEYEVENTF_UNICODE, bypassing IME."""
+        for ch in text:
+            code = ord(ch)
+            inp_down = _INPUT()
+            inp_down.type = _INPUT_KEYBOARD
+            inp_down.union.ki.wVk = 0
+            inp_down.union.ki.wScan = code
+            inp_down.union.ki.dwFlags = _KEYEVENTF_UNICODE
+            inp_down.union.ki.time = 0
+            inp_down.union.ki.dwExtraInfo = None
 
-        inputs = (INPUT * 2)(inp_down, inp_up)
-        SendInput(2, inputs, ctypes.sizeof(INPUT))
-        if char_delay > 0:
-            _time.sleep(char_delay)
+            inp_up = _INPUT()
+            inp_up.type = _INPUT_KEYBOARD
+            inp_up.union.ki.wVk = 0
+            inp_up.union.ki.wScan = code
+            inp_up.union.ki.dwFlags = _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP
+            inp_up.union.ki.time = 0
+            inp_up.union.ki.dwExtraInfo = None
+
+            inputs = (_INPUT * 2)(inp_down, inp_up)
+            _SendInput(2, inputs, ctypes.sizeof(_INPUT))
+            if char_delay > 0:
+                time.sleep(char_delay)
+
+else:
+    _kb_controller = pynput_keyboard.Controller()
+
+    def _send_text(text: str, char_delay: float = 0.01) -> None:
+        """Type text via pynput (non-Windows fallback)."""
+        _kb_controller.type(text)
 
 
 class OverlayUI:
@@ -379,7 +384,6 @@ def main() -> None:
     config = RecorderConfig()
     recorder = PushToTalkRecorder(device_index=device_index, config=config)
     ui = OverlayUI()
-    kb_controller = pynput_keyboard.Controller()
     tray_ok, tray_icon = _start_tray_icon(exit_event)
     if not tray_ok:
         print("Tray icon unavailable on Windows; aborting startup.")
@@ -486,7 +490,7 @@ def main() -> None:
                 return
             ui.set_clipboard(text)
             # 通过 Win32 SendInput 发送 Unicode 字符，绕过输入法且保留逐字输入效果
-            _send_unicode_string(text)
+            _send_text(text)
             print(f"识别结果: {text}")
 
     def on_press(key) -> None:
