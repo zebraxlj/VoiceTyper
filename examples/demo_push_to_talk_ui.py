@@ -214,6 +214,92 @@ def _is_meaningful_text(text: str) -> bool:
     return True
 
 
+def _is_admin() -> bool:
+    """Check if the current process has administrator privileges."""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _restart_as_admin() -> None:
+    """Relaunch the current script/exe with elevated privileges via UAC."""
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        params = " ".join(sys.argv[1:])
+    else:
+        executable = sys.executable
+        params = " ".join([f'"{sys.argv[0]}"'] + sys.argv[1:])
+
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", executable, params, None, 1
+    )
+    sys.exit(0)
+
+
+def _open_settings(exit_event: threading.Event) -> None:
+    """Open a settings window showing admin status and restart option."""
+    win = tk.Toplevel()
+    win.title("VoiceTyper Settings")
+    win.resizable(False, False)
+    win.attributes("-topmost", True)
+    win.configure(bg="#1e1e1e")
+
+    frame = tk.Frame(win, bg="#1e1e1e", padx=20, pady=16)
+    frame.pack()
+
+    # Admin status
+    is_admin = _is_admin()
+    status_text = "Running as Administrator: "
+    status_value = "Yes" if is_admin else "No"
+    status_color = "#4ec959" if is_admin else "#e05252"
+
+    status_frame = tk.Frame(frame, bg="#1e1e1e")
+    status_frame.pack(anchor="w", pady=(0, 12))
+
+    tk.Label(
+        status_frame,
+        text=status_text,
+        font=("Segoe UI", 10),
+        fg="#cccccc",
+        bg="#1e1e1e",
+    ).pack(side="left")
+
+    tk.Label(
+        status_frame,
+        text=status_value,
+        font=("Segoe UI", 10, "bold"),
+        fg=status_color,
+        bg="#1e1e1e",
+    ).pack(side="left")
+
+    if not is_admin:
+        tk.Label(
+            frame,
+            text="Admin is needed for hotkeys to work in Store apps\n(Windows Terminal, VSCode Insider, etc.)",
+            font=("Segoe UI", 9),
+            fg="#999999",
+            bg="#1e1e1e",
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
+
+    btn = tk.Button(
+        frame,
+        text="Restart as Administrator",
+        font=("Segoe UI", 10),
+        command=lambda: [win.destroy(), exit_event.set(), _restart_as_admin()],
+        state="disabled" if is_admin else "normal",
+    )
+    btn.pack(anchor="w")
+
+    win.update_idletasks()
+    w = win.winfo_width()
+    h = win.winfo_height()
+    x = (win.winfo_screenwidth() - w) // 2
+    y = (win.winfo_screenheight() - h) // 2
+    win.geometry(f"+{x}+{y}")
+
+
 def _start_tray_icon(exit_event: threading.Event):
     # Windows-only tray icon with a simple "Exit" menu.
     if sys.platform != "win32":
@@ -241,6 +327,9 @@ def _start_tray_icon(exit_event: threading.Event):
         draw.polygon(points, fill=(255, 255, 255, 255), outline=(0, 0, 0, 255))
         return image
 
+    def _on_settings(icon, item):
+        _open_settings(exit_event)
+
     def _on_exit(icon, item):
         exit_event.set()
         icon.stop()
@@ -250,7 +339,10 @@ def _start_tray_icon(exit_event: threading.Event):
             "VoiceTyper",
             _build_cursor_icon(),
             "VoiceTyper",
-            menu=pystray.Menu(pystray.MenuItem("Exit", _on_exit)),
+            menu=pystray.Menu(
+                pystray.MenuItem("Settings", _on_settings),
+                pystray.MenuItem("Exit", _on_exit),
+            ),
         )
         thread = threading.Thread(target=icon.run, daemon=True)
         thread.start()
