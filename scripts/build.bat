@@ -54,7 +54,18 @@ if %ERRORLEVEL% neq 0 goto :fail
 
 echo.
 echo INFO - Build succeeded: dist\VoiceTyper.exe
-explorer dist
+powershell -NoProfile -Command ^
+    "$f=(Resolve-Path dist).Path; $n='VoiceTyper.exe';" ^
+    "$s=New-Object -Com Shell.Application;" ^
+    "$w=$s.Windows()|Where-Object{$_.Document.Folder.Self.Path -eq $f}|Select-Object -First 1;" ^
+    "if($w){" ^
+    "  Add-Type -Name U -Namespace Win32 -MemberDefinition '[DllImport(\"user32.dll\")]public static extern bool SetForegroundWindow(IntPtr h);';" ^
+    "  [Win32.U]::SetForegroundWindow([IntPtr]$w.HWND)|Out-Null;" ^
+    "  $i=$w.Document.Folder.ParseName($n);" ^
+    "  $w.Document.SelectItem($i,29)" ^
+    "}else{" ^
+    "  explorer /select,(Join-Path $f $n)" ^
+    "}"
 goto :end
 
 :fail
