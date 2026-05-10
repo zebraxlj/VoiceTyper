@@ -242,70 +242,71 @@ def _restart_as_admin() -> None:
     sys.exit(0)
 
 
-def _open_settings(exit_event: threading.Event) -> None:
+def _open_settings(root: tk.Tk, exit_event: threading.Event) -> None:
     """Open a settings window showing admin status and restart option."""
-    win = tk.Toplevel()
-    win.title("VoiceTyper Settings")
-    win.resizable(False, False)
-    win.attributes("-topmost", True)
-    win.configure(bg="#1e1e1e")
 
-    frame = tk.Frame(win, bg="#1e1e1e", padx=20, pady=16)
-    frame.pack()
+    def _create() -> None:
+        win = tk.Toplevel(root)
+        win.title("VoiceTyper Settings")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.configure(bg="#1e1e1e")
 
-    # Admin status
-    is_admin = _is_admin()
-    status_text = "Running as Administrator: "
-    status_value = "Yes" if is_admin else "No"
-    status_color = "#4ec959" if is_admin else "#e05252"
+        frame = tk.Frame(win, bg="#1e1e1e", padx=20, pady=16)
+        frame.pack()
 
-    status_frame = tk.Frame(frame, bg="#1e1e1e")
-    status_frame.pack(anchor="w", pady=(0, 12))
+        is_admin = _is_admin()
+        status_value = "Yes" if is_admin else "No"
+        status_color = "#4ec959" if is_admin else "#e05252"
 
-    tk.Label(
-        status_frame,
-        text=status_text,
-        font=("Segoe UI", 10),
-        fg="#cccccc",
-        bg="#1e1e1e",
-    ).pack(side="left")
+        status_frame = tk.Frame(frame, bg="#1e1e1e")
+        status_frame.pack(anchor="w", pady=(0, 12))
 
-    tk.Label(
-        status_frame,
-        text=status_value,
-        font=("Segoe UI", 10, "bold"),
-        fg=status_color,
-        bg="#1e1e1e",
-    ).pack(side="left")
-
-    if not is_admin:
         tk.Label(
-            frame,
-            text="Admin is needed for hotkeys to work in Store apps\n(Windows Terminal, VSCode Insider, etc.)",
-            font=("Segoe UI", 9),
-            fg="#999999",
+            status_frame,
+            text="Running as Administrator: ",
+            font=("Segoe UI", 10),
+            fg="#cccccc",
             bg="#1e1e1e",
-            justify="left",
-        ).pack(anchor="w", pady=(0, 12))
+        ).pack(side="left")
 
-    btn = tk.Button(
-        frame,
-        text="Restart as Administrator",
-        font=("Segoe UI", 10),
-        command=lambda: [win.destroy(), exit_event.set(), _restart_as_admin()],
-        state="disabled" if is_admin else "normal",
-    )
-    btn.pack(anchor="w")
+        tk.Label(
+            status_frame,
+            text=status_value,
+            font=("Segoe UI", 10, "bold"),
+            fg=status_color,
+            bg="#1e1e1e",
+        ).pack(side="left")
 
-    win.update_idletasks()
-    w = win.winfo_width()
-    h = win.winfo_height()
-    x = (win.winfo_screenwidth() - w) // 2
-    y = (win.winfo_screenheight() - h) // 2
-    win.geometry(f"+{x}+{y}")
+        if not is_admin:
+            tk.Label(
+                frame,
+                text="Admin is needed for hotkeys to work in Store apps\n(Windows Terminal, VSCode Insider, etc.)",
+                font=("Segoe UI", 9),
+                fg="#999999",
+                bg="#1e1e1e",
+                justify="left",
+            ).pack(anchor="w", pady=(0, 12))
+
+        tk.Button(
+            frame,
+            text="Restart as Administrator",
+            font=("Segoe UI", 10),
+            command=lambda: [win.destroy(), exit_event.set(), _restart_as_admin()],
+            state="disabled" if is_admin else "normal",
+        ).pack(anchor="w")
+
+        win.update_idletasks()
+        w = win.winfo_width()
+        h = win.winfo_height()
+        x = (win.winfo_screenwidth() - w) // 2
+        y = (win.winfo_screenheight() - h) // 2
+        win.geometry(f"+{x}+{y}")
+
+    root.after(0, _create)
 
 
-def _start_tray_icon(exit_event: threading.Event):
+def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
     # Windows-only tray icon with a simple "Exit" menu.
     if sys.platform != "win32":
         return True, None
@@ -333,7 +334,7 @@ def _start_tray_icon(exit_event: threading.Event):
         return image
 
     def _on_settings(icon, item):
-        _open_settings(exit_event)
+        _open_settings(tk_root, exit_event)
 
     def _on_exit(icon, item):
         exit_event.set()
@@ -384,7 +385,7 @@ def main() -> None:
     config = RecorderConfig()
     recorder = PushToTalkRecorder(device_index=device_index, config=config)
     ui = OverlayUI()
-    tray_ok, tray_icon = _start_tray_icon(exit_event)
+    tray_ok, tray_icon = _start_tray_icon(ui._root, exit_event)
     if not tray_ok:
         print("Tray icon unavailable on Windows; aborting startup.")
         try:
