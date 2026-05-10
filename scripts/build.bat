@@ -11,8 +11,15 @@ if %ERRORLEVEL% neq 0 (
     goto :fail
 )
 
+echo INFO - Ensuring managed Python is available...
+uv python install
+if %ERRORLEVEL% neq 0 (
+    echo ERROR - Failed to install managed Python.
+    goto :fail
+)
+
 echo INFO - Syncing project dependencies...
-uv sync
+uv sync --python-preference only-managed
 if %ERRORLEVEL% neq 0 (
     echo ERROR - Failed to sync dependencies.
     goto :fail
@@ -27,7 +34,7 @@ if exist dist\VoiceTyper.exe del /q dist\VoiceTyper.exe
 
 :: Build
 echo INFO - Building VoiceTyper.exe...
-uv run --with pyinstaller pyinstaller ^
+uv run --python-preference only-managed --with pyinstaller pyinstaller ^
     --onefile ^
     --noconsole ^
     --name "VoiceTyper" ^
