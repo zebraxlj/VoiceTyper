@@ -358,14 +358,213 @@ def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
     return True, icon
 
 
+class PushToTalkSession:
+    VK_LSHIFT = 0xA0
+    VK_LWIN = 0x5B
+
+    def __init__(
+        self,
+        ui: OverlayUI,
+        recorder: PushToTalkRecorder,
+        config: RecorderConfig,
+        exit_event: threading.Event,
+        hold_s: float,
+        strip_trailing_period: bool,
+    ) -> None:
+        self._ui = ui
+        self._recorder = recorder
+        self._config = config
+        self._exit_event = exit_event
+        self._hold_s = hold_s
+        self._strip_trailing_period = strip_trailing_period
+
+        self._model: Optional[SenseVoiceSmallEngine] = None
+        self._model_ready = threading.Event()
+        self._transcribe_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+
+        self._recording = False
+        self._shift_down = False
+        self._win_down = False
+        self._last_down_time = 0.0
+        self._record_start_time = 0.0
+        self._start_timer: Optional[threading.Timer] = None
+
+    def load_model(self) -> None:
+        try:
+            self._model = SenseVoiceSmallEngine(
+                strip_trailing_period=self._strip_trailing_period,
+                quantized=False,
+            )
+        except Exception as exc:
+            print(f"模型加载失败: {exc}")
+            self._exit_event.set()
+        finally:
+            self._model_ready.set()
+            self._ui.hide()
+
+    def _hotkey_active(self) -> bool:
+        return self._shift_down and self._win_down
+
+    def _is_key_physically_pressed(self, vk: int) -> bool:
+        if sys.platform != "win32":
+            return True
+        return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
+
+    def _sync_modifier_state(self) -> None:
+        if sys.platform != "win32":
+            return
+        if self._shift_down and not self._is_key_physically_pressed(self.VK_LSHIFT):
+            self._shift_down = False
+        if self._win_down and not self._is_key_physically_pressed(self.VK_LWIN):
+            self._win_down = False
+
+    def _start_recording(self) -> None:
+        with self._state_lock:
+            self._sync_modifier_state()
+            if not self._hotkey_active() or self._recording:
+                return
+            if sys.platform == "win32" and not (
+                self._is_key_physically_pressed(self.VK_LSHIFT)
+                and self._is_key_physically_pressed(self.VK_LWIN)
+            ):
+                return
+            if not self._model_ready.is_set():
+                print("模型尚未加载完成，请稍候...")
+                return
+            if self._model is None:
+                return
+            self._recording = True
+            self._record_start_time = time.time()
+        self._ui.show()
+        self._recorder.start()
+
+    def _stop_recording(self) -> None:
+        self._ui.hide()
+        pcm16 = self._recorder.stop()
+        dur_base = self._record_start_time if self._record_start_time > 0 else self._last_down_time
+        dur = max(0.0, time.time() - dur_base)
+        if not pcm16:
+            print("录音为空。")
+            return
+        print(f"识别中... ({dur:.1f}s)")
+        threading.Thread(
+            target=self._transcribe_and_type, args=(pcm16,), daemon=True
+        ).start()
+
+    def _transcribe_and_type(self, pcm16: bytes) -> None:
+        with self._transcribe_lock:
+            if self._model is None:
+                print("模型未就绪，跳过识别。")
+                return
+            try:
+                text = self._model.transcribe(pcm16, self._config.rate).strip()
+            except Exception as exc:
+                print(f"识别失败: {exc}")
+                return
+            if not text:
+                print("识别结果为空。")
+                return
+            if not _is_meaningful_text(text):
+                print(f"忽略无意义结果: {text}")
+                return
+            self._ui.set_clipboard(text)
+            _send_text(text)
+            print(f"识别结果: {text}")
+
+    def on_press(self, key) -> None:
+        if key == pynput_keyboard.Key.shift_l:
+            if self._shift_down:
+                return
+            self._shift_down = True
+        elif key == pynput_keyboard.Key.cmd_l:
+            if self._win_down:
+                return
+            self._win_down = True
+        else:
+            return
+        with self._state_lock:
+            if self._recording:
+                return
+            self._sync_modifier_state()
+            if not self._hotkey_active():
+                return
+            if self._start_timer and self._start_timer.is_alive():
+                return
+            self._last_down_time = time.time()
+            self._start_timer = threading.Timer(self._hold_s, self._start_recording)
+            self._start_timer.daemon = True
+            self._start_timer.start()
+
+    def on_release(self, key):
+        if key == pynput_keyboard.Key.shift_l:
+            self._shift_down = False
+        elif key == pynput_keyboard.Key.cmd_l:
+            self._win_down = False
+        else:
+            return True
+        with self._state_lock:
+            if self._start_timer and self._start_timer.is_alive() and not self._hotkey_active():
+                try:
+                    self._start_timer.cancel()
+                except Exception:
+                    pass
+                self._start_timer = None
+            if not self._recording:
+                return True
+            if self._hotkey_active():
+                return True
+            self._recording = False
+        self._stop_recording()
+        return True
+
+    def run(self, tray_icon) -> None:
+        self._ui.show(text="⏳ 模型加载中...")
+        threading.Thread(target=self.load_model, daemon=True).start()
+
+        listener = pynput_keyboard.Listener(
+            on_press=self.on_press, on_release=self.on_release
+        )
+        listener.start()
+
+        def _sigint_handler(signum, frame) -> None:
+            self._exit_event.set()
+
+        try:
+            signal.signal(signal.SIGINT, _sigint_handler)
+        except Exception:
+            pass
+
+        try:
+            self._ui.run(self._exit_event)
+        except KeyboardInterrupt:
+            self._exit_event.set()
+        finally:
+            if self._recording:
+                try:
+                    self._recorder.stop()
+                except Exception:
+                    pass
+            try:
+                listener.stop()
+            except Exception:
+                pass
+            if tray_icon:
+                try:
+                    tray_icon.stop()
+                except Exception:
+                    pass
+            try:
+                self._recorder.close()
+            except Exception:
+                pass
+
+
 def main() -> None:
     hold_ms = 300
-    strip_trailing_period = True  # 设为 False 可保留识别结果末尾的句号/句点
-    hold_s = max(0.0, hold_ms / 1000.0)
+    strip_trailing_period = True
     exit_event = threading.Event()
-    transcribe_lock = threading.Lock()
 
-    # 启动资源监控（每秒输出一次 CPU / 内存 / GPU 显存）
     if SHOW_RESOURCE_USAGE:
         ResourceMonitor(interval=1.0, exit_event=exit_event).start()
 
@@ -388,205 +587,18 @@ def main() -> None:
     tray_ok, tray_icon = _start_tray_icon(ui._root, exit_event)
     if not tray_ok:
         print("Tray icon unavailable on Windows; aborting startup.")
-        try:
-            recorder.close()
-        except Exception:
-            pass
+        recorder.close()
         return
 
-    # ------------------------------------------------------------------
-    # 后台线程加载模型，UI 显示加载状态，避免阻塞主线程
-    # ------------------------------------------------------------------
-    model: Optional[SenseVoiceSmallEngine] = None
-    model_ready = threading.Event()
-
-    def _load_model() -> None:
-        nonlocal model
-        try:
-            m = SenseVoiceSmallEngine(
-                strip_trailing_period=strip_trailing_period,
-                quantized=False,
-            )
-            model = m
-        except Exception as exc:
-            print(f"模型加载失败: {exc}")
-            exit_event.set()
-        finally:
-            model_ready.set()
-            ui.hide()
-
-    ui.show(text="⏳ 模型加载中...")
-    threading.Thread(target=_load_model, daemon=True).start()
-
-    recording = False
-    shift_down = False
-    win_down = False
-    last_down_time = 0.0
-    record_start_time = 0.0
-    start_timer: Optional[threading.Timer] = None
-    state_lock = threading.Lock()
-
-    def _hotkey_active() -> bool:
-        return shift_down and win_down
-
-    if sys.platform == "win32":
-        VK_LSHIFT = 0xA0
-        VK_LWIN = 0x5B
-
-        def _is_key_physically_pressed(vk: int) -> bool:
-            return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
-
-        def _sync_modifier_state() -> None:
-            nonlocal shift_down, win_down
-            if shift_down and not _is_key_physically_pressed(VK_LSHIFT):
-                shift_down = False
-            if win_down and not _is_key_physically_pressed(VK_LWIN):
-                win_down = False
-    else:
-        def _sync_modifier_state() -> None:
-            pass
-
-    def start_recording() -> None:
-        nonlocal recording, record_start_time
-        with state_lock:
-            _sync_modifier_state()
-            if not _hotkey_active() or recording:
-                return
-            if sys.platform == "win32" and not (
-                _is_key_physically_pressed(VK_LSHIFT)
-                and _is_key_physically_pressed(VK_LWIN)
-            ):
-                return
-            if not model_ready.is_set():
-                print("模型尚未加载完成，请稍候...")
-                return
-            if model is None:
-                return
-            recording = True
-            record_start_time = time.time()
-        ui.show()
-        recorder.start()
-
-    def transcribe_and_type(pcm16: bytes) -> None:
-        # Run ASR, then write to clipboard and current cursor.
-        with transcribe_lock:
-            if model is None:
-                print("模型未就绪，跳过识别。")
-                return
-            try:
-                text = model.transcribe(pcm16, config.rate).strip()
-            except Exception as exc:
-                print(f"识别失败: {exc}")
-                return
-            if not text:
-                print("识别结果为空。")
-                return
-            if not _is_meaningful_text(text):
-                print(f"忽略无意义结果: {text}")
-                return
-            ui.set_clipboard(text)
-            # 通过 Win32 SendInput 发送 Unicode 字符，绕过输入法且保留逐字输入效果
-            _send_text(text)
-            print(f"识别结果: {text}")
-
-    def on_press(key) -> None:
-        # Start hold timer on left Shift+Win press.
-        # Guard against key auto-repeat: only react to genuine new presses.
-        nonlocal shift_down, win_down, start_timer, last_down_time
-        if key == pynput_keyboard.Key.shift_l:
-            if shift_down:
-                return  # auto-repeat, ignore
-            shift_down = True
-        elif key == pynput_keyboard.Key.cmd_l:
-            if win_down:
-                return  # auto-repeat, ignore
-            win_down = True
-        else:
-            return
-        with state_lock:
-            if recording:
-                return
-            _sync_modifier_state()
-            if not _hotkey_active():
-                return
-            if start_timer and start_timer.is_alive():
-                return
-            last_down_time = time.time()
-
-            start_timer = threading.Timer(hold_s, start_recording)
-            start_timer.daemon = True
-            start_timer.start()
-
-    def on_release(key):
-        # On release, stop recording and kick off transcription.
-        nonlocal recording, shift_down, win_down, start_timer
-        if key == pynput_keyboard.Key.shift_l:
-            shift_down = False
-        elif key == pynput_keyboard.Key.cmd_l:
-            win_down = False
-        else:
-            return True
-        with state_lock:
-            if start_timer and start_timer.is_alive() and not _hotkey_active():
-                try:
-                    start_timer.cancel()
-                except Exception:
-                    pass
-                start_timer = None
-            if not recording:
-                return True
-            if _hotkey_active():
-                return True
-            recording = False
-        ui.hide()
-        pcm16 = recorder.stop()
-        dur_base = record_start_time if record_start_time > 0 else last_down_time
-        dur = max(0.0, time.time() - dur_base)
-        if not pcm16:
-            print("录音为空。")
-            return True
-        print(f"识别中... ({dur:.1f}s)")
-        threading.Thread(target=transcribe_and_type, args=(pcm16,), daemon=True).start()
-        return True
-
-    listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.start()
-
-    def _sigint_handler(signum, frame) -> None:
-        exit_event.set()
-
-    try:
-        signal.signal(signal.SIGINT, _sigint_handler)
-    except Exception:
-        pass
-
-    try:
-        ui.run(exit_event)
-    except KeyboardInterrupt:
-        exit_event.set()
-        print("结束进程：收到 KeyboardInterrupt，准备退出")
-    finally:
-        if recording:
-            try:
-                recorder.stop()
-            except Exception:
-                pass
-        try:
-            listener.stop()
-            print("结束进程：键盘 listener 已终止")
-        except Exception as e:
-            print(f"结束进程：键盘 listener 终止出错：{e}")
-        if tray_icon:
-            try:
-                tray_icon.stop()
-            except Exception:
-                pass
-        try:
-            recorder.close()
-            print("结束进程：收音已终止")
-        except Exception as e:
-            print(f"结束进程：收音终止出错：{e}")
-        print("结束进程：已退出")
+    session = PushToTalkSession(
+        ui=ui,
+        recorder=recorder,
+        config=config,
+        exit_event=exit_event,
+        hold_s=max(0.0, hold_ms / 1000.0),
+        strip_trailing_period=strip_trailing_period,
+    )
+    session.run(tray_icon=tray_icon)
 
 
 if __name__ == "__main__":
