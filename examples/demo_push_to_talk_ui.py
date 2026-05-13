@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 from typing import Optional
 
 from pynput import keyboard as pynput_keyboard
@@ -17,6 +18,12 @@ from voicetyper.monitor import ResourceMonitor
 logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 
 SHOW_RESOURCE_USAGE = False
+
+
+def _resource_path(relative: str) -> Path:
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / relative
+    return Path(__file__).resolve().parent.parent / relative
 
 
 if sys.platform == "win32":
@@ -103,6 +110,8 @@ else:
 class OverlayUI:
     _DEFAULT_TEXT = "🎤 正在收音"
 
+    _ICON_PATH = _resource_path("UI/assets/IconApp.png")
+
     def __init__(self) -> None:
         self._root = tk.Tk()
         self._root.withdraw()
@@ -114,6 +123,10 @@ class OverlayUI:
             self._root.attributes("-disabled", True)
         except Exception:
             pass
+        if self._ICON_PATH.exists():
+            _icon_img = tk.PhotoImage(file=str(self._ICON_PATH))
+            self._root.iconphoto(True, _icon_img)
+            self._icon_photo_ref = _icon_img
         self._root.configure(bg="#121212")
 
         frame = tk.Frame(
@@ -317,18 +330,19 @@ def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
         print(f"Tray icon unavailable (pystray/Pillow not installed): {exc}")
         return False, None
 
-    def _build_cursor_icon(size: int = 16):
-        # Minimal cursor glyph to avoid external icon files.
-        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    def _load_icon():
+        icon_path = _resource_path("UI/assets/IconTaskTray.png")
+        if icon_path.exists():
+            return Image.open(icon_path)
+        image = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        # Simple cursor arrow
         points = [
             (1, 1),
-            (1, size - 2),
-            (6, size - 7),
-            (9, size - 4),
-            (11, size - 6),
-            (6, size - 11),
+            (1, 14),
+            (6, 9),
+            (9, 12),
+            (11, 10),
+            (6, 5),
         ]
         draw.polygon(points, fill=(255, 255, 255, 255), outline=(0, 0, 0, 255))
         return image
@@ -343,7 +357,7 @@ def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
     try:
         icon = pystray.Icon(
             "VoiceTyper",
-            _build_cursor_icon(),
+            _load_icon(),
             "VoiceTyper",
             menu=pystray.Menu(
                 pystray.MenuItem("Settings", _on_settings),
