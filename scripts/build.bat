@@ -48,6 +48,9 @@ uv run --python-preference only-managed --with pyinstaller pyinstaller ^
     --hidden-import "pystray._win32" ^
     --hidden-import "PIL.Image" ^
     --hidden-import "PIL.ImageDraw" ^
+    --icon "UI\assets\IconApp.ico" ^
+    --add-data "UI\assets\IconApp.png;UI\assets" ^
+    --add-data "UI\assets\IconTaskTray.png;UI\assets" ^
     examples\demo_push_to_talk_ui.py
 
 if %ERRORLEVEL% neq 0 goto :fail
