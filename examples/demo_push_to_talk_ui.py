@@ -1,11 +1,13 @@
 import ctypes
 import logging
+import os
 import re
 import signal
 import sys
 import threading
 import time
 import tkinter as tk
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -15,7 +17,46 @@ from voicetyper import AudioDeviceResolver, PushToTalkRecorder, RecorderConfig
 from voicetyper.models import SenseVoiceSmallEngine
 from voicetyper.monitor import ResourceMonitor
 
-logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
+# 日志开关：True = 控制台显示完整格式（含日期/模块名/DEBUG），False = 简洁格式
+# 也可通过环境变量 VOICETYPER_VERBOSE=1 启用
+# VERBOSE_CONSOLE = os.getenv("VOICETYPER_VERBOSE", "0") == "1"
+VERBOSE_CONSOLE = False
+
+# 配置日志：同时输出到控制台和文件
+# 开发环境：项目根目录下的 logs
+# 打包后的 exe：exe 所在目录下的 logs
+if getattr(sys, "frozen", False):
+    log_dir = Path(sys.executable).parent / "logs"
+else:
+    log_dir = Path(__file__).resolve().parent.parent / "logs"
+log_dir.mkdir(exist_ok=True)
+log_file = log_dir / "voicetyper.log"
+
+# 完整格式（含日期、毫秒、模块名）
+_VERBOSE_FMT = logging.Formatter(
+    "%(asctime)s.%(msecs)03d | %(levelname)-7s | %(name)-20s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+# 简洁格式（仅时间、级别、消息）
+_SIMPLE_FMT = logging.Formatter(
+    "%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%H:%M:%S"
+)
+
+# 文件处理器：始终使用完整格式，便于排查
+file_handler = RotatingFileHandler(
+    log_file, maxBytes=5*1024*1024, backupCount=5, encoding="utf-8"
+)
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(_VERBOSE_FMT)
+
+# 控制台处理器：根据 VERBOSE_CONSOLE 切换格式和级别
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG if VERBOSE_CONSOLE else logging.INFO)
+console_handler.setFormatter(_VERBOSE_FMT if VERBOSE_CONSOLE else _SIMPLE_FMT)
+
+logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, console_handler])
+logger = logging.getLogger("voicetyper.app")
 
 SHOW_RESOURCE_USAGE = False
 
@@ -327,7 +368,7 @@ def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
         import pystray
         from PIL import Image, ImageDraw
     except Exception as exc:
-        print(f"Tray icon unavailable (pystray/Pillow not installed): {exc}")
+        logger.warning(f"Tray icon unavailable (pystray/Pillow not installed): {exc}")
         return False, None
 
     def _load_icon():
@@ -367,7 +408,7 @@ def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
         thread = threading.Thread(target=icon.run, daemon=True)
         thread.start()
     except Exception as exc:
-        print(f"Tray icon failed to start: {exc}")
+        logger.exception(f"Tray icon failed to start: {exc}")
         return False, None
     return True, icon
 
@@ -406,12 +447,14 @@ class PushToTalkSession:
 
     def load_model(self) -> None:
         try:
+            logger.info("开始加载模型...")
             self._model = SenseVoiceSmallEngine(
                 strip_trailing_period=self._strip_trailing_period,
                 quantized=False,
             )
+            logger.info("模型加载完成")
         except Exception as exc:
-            print(f"模型加载失败: {exc}")
+            logger.exception(f"模型加载失败: {exc}")
             self._exit_event.set()
         finally:
             self._model_ready.set()
@@ -444,95 +487,125 @@ class PushToTalkSession:
             ):
                 return
             if not self._model_ready.is_set():
-                print("模型尚未加载完成，请稍候...")
+                logger.warning("模型尚未加载完成，请稍候...")
                 return
             if self._model is None:
+                logger.error("模型为 None，无法开始录音")
                 return
             self._recording = True
             self._record_start_time = time.time()
-        self._ui.show()
-        self._recorder.start()
+        try:
+            self._ui.show()
+            self._recorder.start()
+            logger.debug(f"开始录音 (record_start_time={self._record_start_time})")
+        except Exception as exc:
+            logger.exception(f"启动录音失败: {exc}")
+            self._recording = False
 
     def _stop_recording(self) -> None:
-        self._ui.hide()
-        pcm16 = self._recorder.stop()
-        dur_base = self._record_start_time if self._record_start_time > 0 else self._last_down_time
-        dur = max(0.0, time.time() - dur_base)
-        if not pcm16:
-            print("录音为空。")
-            return
-        print(f"识别中... ({dur:.1f}s)")
-        threading.Thread(
-            target=self._transcribe_and_type, args=(pcm16,), daemon=True
-        ).start()
+        try:
+            self._ui.hide()
+            pcm16 = self._recorder.stop()
+            dur_base = self._record_start_time if self._record_start_time > 0 else self._last_down_time
+            dur = max(0.0, time.time() - dur_base)
+            logger.debug(f"停止录音，时长: {dur:.1f}s，数据大小: {len(pcm16) if pcm16 else 0} bytes")
+            if not pcm16:
+                logger.warning("录音为空")
+                return
+            logger.info(f"识别中... ({dur:.1f}s)")
+            threading.Thread(
+                target=self._transcribe_and_type, args=(pcm16,), daemon=True
+            ).start()
+        except Exception as exc:
+            logger.exception(f"停止录音失败: {exc}")
 
     def _transcribe_and_type(self, pcm16: bytes) -> None:
         with self._transcribe_lock:
             if self._model is None:
-                print("模型未就绪，跳过识别。")
+                logger.error("模型未就绪，跳过识别")
                 return
             try:
+                logger.debug("开始语音识别...")
                 text = self._model.transcribe(pcm16, self._config.rate).strip()
+                logger.debug(f"识别原始结果: '{text}'")
             except Exception as exc:
-                print(f"识别失败: {exc}")
+                logger.exception(f"识别失败: {exc}")
                 return
             if not text:
-                print("识别结果为空。")
+                logger.debug("识别结果为空")
                 return
             if not _is_meaningful_text(text):
-                print(f"忽略无意义结果: {text}")
+                logger.debug(f"忽略无意义结果: {text}")
                 return
-            self._ui.set_clipboard(text)
-            _send_text(text)
-            print(f"识别结果: {text}")
+            try:
+                self._ui.set_clipboard(text)
+                _send_text(text)
+                logger.info(f"识别结果: {text}")
+            except Exception as exc:
+                logger.exception(f"输入文本失败: {exc}")
 
     def on_press(self, key) -> None:
-        if key == pynput_keyboard.Key.shift_l:
-            if self._shift_down:
+        try:
+            if key == pynput_keyboard.Key.shift_l:
+                if self._shift_down:
+                    return
+                self._shift_down = True
+                logger.debug("Left Shift 按下")
+            elif key == pynput_keyboard.Key.cmd_l:
+                if self._win_down:
+                    return
+                self._win_down = True
+                logger.debug("Left Win 按下")
+            else:
                 return
-            self._shift_down = True
-        elif key == pynput_keyboard.Key.cmd_l:
-            if self._win_down:
-                return
-            self._win_down = True
-        else:
-            return
-        with self._state_lock:
-            if self._recording:
-                return
-            self._sync_modifier_state()
-            if not self._hotkey_active():
-                return
-            if self._start_timer and self._start_timer.is_alive():
-                return
-            self._last_down_time = time.time()
-            self._start_timer = threading.Timer(self._hold_s, self._start_recording)
-            self._start_timer.daemon = True
-            self._start_timer.start()
+            with self._state_lock:
+                if self._recording:
+                    return
+                self._sync_modifier_state()
+                if not self._hotkey_active():
+                    return
+                if self._start_timer and self._start_timer.is_alive():
+                    return
+                self._last_down_time = time.time()
+                logger.debug(f"快捷键激活，启动 {self._hold_s}s 计时器")
+                self._start_timer = threading.Timer(self._hold_s, self._start_recording)
+                self._start_timer.daemon = True
+                self._start_timer.start()
+        except Exception as exc:
+            logger.exception(f"按键处理异常: {exc}")
 
     def on_release(self, key):
-        if key == pynput_keyboard.Key.shift_l:
-            self._shift_down = False
-        elif key == pynput_keyboard.Key.cmd_l:
-            self._win_down = False
-        else:
+        try:
+            if key == pynput_keyboard.Key.shift_l:
+                self._shift_down = False
+                logger.debug("Left Shift 释放")
+            elif key == pynput_keyboard.Key.cmd_l:
+                self._win_down = False
+                logger.debug("Left Win 释放")
+            else:
+                return True
+            with self._state_lock:
+                if self._start_timer and self._start_timer.is_alive() and not self._hotkey_active():
+                    try:
+                        self._start_timer.cancel()
+                        logger.debug("取消录音计时器")
+                    except Exception as exc:
+                        logger.exception(f"取消计时器失败: {exc}")
+                    self._start_timer = None
+                if not self._recording:
+                    return True
+                if self._hotkey_active():
+                    return True
+                self._recording = False
+                logger.debug("快捷键释放，准备停止录音")
+            self._stop_recording()
             return True
-        with self._state_lock:
-            if self._start_timer and self._start_timer.is_alive() and not self._hotkey_active():
-                try:
-                    self._start_timer.cancel()
-                except Exception:
-                    pass
-                self._start_timer = None
-            if not self._recording:
-                return True
-            if self._hotkey_active():
-                return True
-            self._recording = False
-        self._stop_recording()
-        return True
+        except Exception as exc:
+            logger.exception(f"按键释放处理异常: {exc}")
+            return True
 
     def run(self, tray_icon) -> None:
+        logger.info("=== VoiceTyper 启动 ===")
         self._ui.show(text="⏳ 模型加载中...")
         threading.Thread(target=self.load_model, daemon=True).start()
 
@@ -540,38 +613,49 @@ class PushToTalkSession:
             on_press=self.on_press, on_release=self.on_release
         )
         listener.start()
+        logger.info("键盘监听器已启动")
 
         def _sigint_handler(signum, frame) -> None:
+            logger.info("收到 SIGINT 信号，准备退出")
             self._exit_event.set()
 
         try:
             signal.signal(signal.SIGINT, _sigint_handler)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"无法设置 SIGINT 处理器: {exc}")
 
         try:
             self._ui.run(self._exit_event)
         except KeyboardInterrupt:
+            logger.info("收到 KeyboardInterrupt，准备退出")
             self._exit_event.set()
+        except Exception as exc:
+            logger.exception(f"UI 运行异常: {exc}")
         finally:
+            logger.info("开始清理资源...")
             if self._recording:
                 try:
                     self._recorder.stop()
-                except Exception:
-                    pass
+                    logger.debug("已停止录音")
+                except Exception as exc:
+                    logger.exception(f"停止录音失败: {exc}")
             try:
                 listener.stop()
-            except Exception:
-                pass
+                logger.debug("已停止键盘监听器")
+            except Exception as exc:
+                logger.exception(f"停止监听器失败: {exc}")
             if tray_icon:
                 try:
                     tray_icon.stop()
-                except Exception:
-                    pass
+                    logger.debug("已停止托盘图标")
+                except Exception as exc:
+                    logger.exception(f"停止托盘图标失败: {exc}")
             try:
                 self._recorder.close()
-            except Exception:
-                pass
+                logger.debug("已关闭录音器")
+            except Exception as exc:
+                logger.exception(f"关闭录音器失败: {exc}")
+            logger.info("=== VoiceTyper 已退出 ===")
 
 
 def main() -> None:
@@ -582,8 +666,8 @@ def main() -> None:
     if SHOW_RESOURCE_USAGE:
         ResourceMonitor(interval=1.0, exit_event=exit_event).start()
 
-    print("=== UI Push-to-Talk Demo ===")
-    print(
+    logger.info("=== UI Push-to-Talk Demo ===")
+    logger.info(
         "Hold left Shift+Win to record, release to transcribe and type. Use tray menu to exit."
     )
 
@@ -591,16 +675,16 @@ def main() -> None:
         info = resolver.default_input()
         device_index = int(info["index"]) if info else None
         if info:
-            print(f"默认麦克风设备: [{info['index']}] {info['name']}")
+            logger.info(f"默认麦克风设备: [{info['index']}] {info['name']}")
         else:
-            print("默认麦克风设备: 未知")
+            logger.info("默认麦克风设备: 未知")
 
     config = RecorderConfig()
     recorder = PushToTalkRecorder(device_index=device_index, config=config)
     ui = OverlayUI()
     tray_ok, tray_icon = _start_tray_icon(ui._root, exit_event)
     if not tray_ok:
-        print("Tray icon unavailable on Windows; aborting startup.")
+        logger.error("Tray icon unavailable on Windows; aborting startup.")
         recorder.close()
         return
 
