@@ -449,22 +449,39 @@ def _start_tray_icon(
         logger.warning(f"Tray icon unavailable (pystray/Pillow not installed): {exc}")
         return False, None
 
-    def _load_icon():
+    def _load_icon(admin: bool = False):
         icon_path = _resource_path("UI/assets/IconTaskTray.png")
         if icon_path.exists():
-            return Image.open(icon_path)
-        image = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        points = [
-            (1, 1),
-            (1, 14),
-            (6, 9),
-            (9, 12),
-            (11, 10),
-            (6, 5),
-        ]
-        draw.polygon(points, fill=(255, 255, 255, 255), outline=(0, 0, 0, 255))
-        return image
+            base = Image.open(icon_path).convert("RGBA")
+        else:
+            base = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(base)
+            points = [
+                (1, 1),
+                (1, 14),
+                (6, 9),
+                (9, 12),
+                (11, 10),
+                (6, 5),
+            ]
+            draw.polygon(points, fill=(255, 255, 255, 255), outline=(0, 0, 0, 255))
+        if admin:
+            # Green badge in the bottom-right corner to signal elevated privileges.
+            w, h = base.size
+            r = max(3, min(w, h) // 4)
+            margin = max(1, r // 4)
+            x1, y1 = w - margin, h - margin
+            x0, y0 = x1 - 2 * r, y1 - 2 * r
+            draw = ImageDraw.Draw(base)
+            draw.ellipse(
+                (x0 - 1, y0 - 1, x1 + 1, y1 + 1),
+                fill=(0, 0, 0, 255),
+            )
+            draw.ellipse(
+                (x0, y0, x1, y1),
+                fill=(78, 201, 89, 255),
+            )
+        return base
 
     def _on_settings(icon, item):
         _open_settings(tk_root, exit_event, recorder)
@@ -473,11 +490,13 @@ def _start_tray_icon(
         exit_event.set()
         icon.stop()
 
+    is_admin = _is_admin()
+    title = "VoiceTyper (Admin)" if is_admin else "VoiceTyper"
     try:
         icon = pystray.Icon(
             "VoiceTyper",
-            _load_icon(),
-            "VoiceTyper",
+            _load_icon(admin=is_admin),
+            title,
             menu=pystray.Menu(
                 pystray.MenuItem("Settings", _on_settings),
                 pystray.MenuItem("Exit", _on_exit),
