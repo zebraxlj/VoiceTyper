@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from tkinter import ttk
 from typing import Optional
 
 from pynput import keyboard as pynput_keyboard
@@ -20,7 +21,7 @@ from voicetyper.monitor import ResourceMonitor
 # 日志开关：True = 控制台显示完整格式（含日期/模块名/DEBUG），False = 简洁格式
 # 也可通过环境变量 VOICETYPER_VERBOSE=1 启用
 # VERBOSE_CONSOLE = os.getenv("VOICETYPER_VERBOSE", "0") == "1"
-VERBOSE_CONSOLE = False
+VERBOSE_CONSOLE = True
 
 # 配置日志：同时输出到控制台和文件
 # 开发环境：项目根目录下的 logs
@@ -296,8 +297,12 @@ def _restart_as_admin() -> None:
     sys.exit(0)
 
 
-def _open_settings(root: tk.Tk, exit_event: threading.Event) -> None:
-    """Open a settings window showing admin status and restart option."""
+def _open_settings(
+    root: tk.Tk,
+    exit_event: threading.Event,
+    recorder: "PushToTalkRecorder",
+) -> None:
+    """Open a settings window showing admin status, input device picker, and restart option."""
 
     def _create() -> None:
         win = tk.Toplevel(root)
@@ -348,7 +353,76 @@ def _open_settings(root: tk.Tk, exit_event: threading.Event) -> None:
             font=("Segoe UI", 10),
             command=lambda: [win.destroy(), exit_event.set(), _restart_as_admin()],
             state="disabled" if is_admin else "normal",
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(0, 12))
+
+        # ── Input device picker ──────────────────────────────
+        tk.Label(
+            frame,
+            text="Input Device",
+            font=("Segoe UI", 10, "bold"),
+            fg="#cccccc",
+            bg="#1e1e1e",
+        ).pack(anchor="w", pady=(4, 4))
+
+        with AudioDeviceResolver() as resolver:
+            devices = resolver.list_user_endpoints()
+            if not devices:
+                devices = resolver.list_inputs()
+            default_info = resolver.default_input()
+
+        labels: list[str] = []
+        index_by_label: dict[str, Optional[int]] = {}
+        default_label = "System Default"
+        if default_info:
+            default_label = f"System Default ({default_info['name']})"
+        labels.append(default_label)
+        index_by_label[default_label] = None
+        for d in devices:
+            label = f"[{d['index']}] {d['name']}"
+            labels.append(label)
+            index_by_label[label] = int(d["index"])
+
+        current_idx = recorder.device_index
+        current_label = default_label
+        if current_idx is not None:
+            for lbl, idx in index_by_label.items():
+                if idx == current_idx:
+                    current_label = lbl
+                    break
+
+        device_var = tk.StringVar(value=current_label)
+        combo = ttk.Combobox(
+            frame,
+            textvariable=device_var,
+            values=labels,
+            state="readonly",
+            width=50,
+        )
+        combo.pack(anchor="w", pady=(0, 6))
+
+        status_msg = tk.Label(
+            frame,
+            text="",
+            font=("Segoe UI", 9),
+            fg="#999999",
+            bg="#1e1e1e",
+        )
+        status_msg.pack(anchor="w", pady=(0, 6))
+
+        def _on_device_change(_event=None) -> None:
+            new_label = device_var.get()
+            new_idx = index_by_label.get(new_label)
+            try:
+                recorder.set_device_index(new_idx)
+                status_msg.configure(
+                    text=f"Switched to: {new_label}", fg="#4ec959"
+                )
+                logger.info(f"输入设备已切换: {new_label}")
+            except Exception as exc:
+                status_msg.configure(text=f"Failed: {exc}", fg="#e05252")
+                logger.exception(f"切换输入设备失败: {exc}")
+
+        combo.bind("<<ComboboxSelected>>", _on_device_change)
 
         win.update_idletasks()
         w = win.winfo_width()
@@ -360,7 +434,11 @@ def _open_settings(root: tk.Tk, exit_event: threading.Event) -> None:
     root.after(0, _create)
 
 
-def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
+def _start_tray_icon(
+    tk_root: tk.Tk,
+    exit_event: threading.Event,
+    recorder: "PushToTalkRecorder",
+):
     # Windows-only tray icon with a simple "Exit" menu.
     if sys.platform != "win32":
         return True, None
@@ -389,7 +467,7 @@ def _start_tray_icon(tk_root: tk.Tk, exit_event: threading.Event):
         return image
 
     def _on_settings(icon, item):
-        _open_settings(tk_root, exit_event)
+        _open_settings(tk_root, exit_event, recorder)
 
     def _on_exit(icon, item):
         exit_event.set()
@@ -681,8 +759,11 @@ def main() -> None:
 
     config = RecorderConfig()
     recorder = PushToTalkRecorder(device_index=device_index, config=config)
+    # 启动时后台探测一次输入格式，把首次按 PTT 时的开流延迟与可能的回退握手
+    # 摊到模型加载/UI 初始化的等待里，避免开头丢音。
+    recorder.probe_format(async_=True)
     ui = OverlayUI()
-    tray_ok, tray_icon = _start_tray_icon(ui._root, exit_event)
+    tray_ok, tray_icon = _start_tray_icon(ui._root, exit_event, recorder)
     if not tray_ok:
         logger.error("Tray icon unavailable on Windows; aborting startup.")
         recorder.close()

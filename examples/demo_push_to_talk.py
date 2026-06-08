@@ -77,6 +77,7 @@ def main() -> None:
 
         config = RecorderConfig()
         recorder = PushToTalkRecorder(device_index=device_index, config=config)
+        recorder.probe_format(async_=True)
 
         hold_s = max(0.0, hold_ms / 1000.0)
         last_down_time = 0.0
