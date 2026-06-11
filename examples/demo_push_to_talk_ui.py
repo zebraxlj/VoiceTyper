@@ -13,7 +13,7 @@ from typing import Optional
 
 from pynput import keyboard as pynput_keyboard
 
-from voicetyper import AudioDeviceResolver, PushToTalkRecorder, RecorderConfig
+from voicetyper import PushToTalkRecorder, RecorderConfig
 from voicetyper.models import SenseVoiceSmallEngine
 from voicetyper.monitor import ResourceMonitor
 
@@ -296,8 +296,8 @@ def _restart_as_admin() -> None:
     sys.exit(0)
 
 
-def _settings_store():
-    """Import the shared UI settings store (repo-root ``UI`` package).
+def _audio_devices():
+    """Import the UI-agnostic input-device model (repo-root ``UI`` package).
 
     The package lives at the repo root, not under ``examples/``, so make sure
     the root is importable before pulling it in.
@@ -305,9 +305,9 @@ def _settings_store():
     repo_root = str(Path(__file__).resolve().parent.parent)
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-    from UI import settings_store
+    from UI import audio_devices
 
-    return settings_store
+    return audio_devices
 
 
 def _open_settings(
@@ -377,42 +377,17 @@ def _open_settings(
             bg="#1e1e1e",
         ).pack(anchor="w", pady=(4, 4))
 
-        with AudioDeviceResolver() as resolver:
-            devices = resolver.list_user_endpoints()
-            if not devices:
-                devices = resolver.list_inputs()
-            default_info = resolver.default_input()
+        # UI 无关的设备选择逻辑（枚举/持久化/断开重连）都在 UI.audio_devices 里；
+        # 这里只负责渲染成 Combobox 并把"何时刷新"接上去。正式 UI 可复用同一套。
+        audio_devices = _audio_devices()
+        selector = audio_devices.InputDeviceSelector()
+        selector.select_by_index(recorder.device_index)
 
-        labels: list[str] = []
-        index_by_label: dict[str, Optional[int]] = {}
-        # 持久化按设备名（而非 index）保存：重启/热插拔后 index 会变，名字更稳定。
-        # System Default 用空字符串表示，启动时回退到系统默认设备。
-        name_by_label: dict[str, str] = {}
-        default_label = "System Default"
-        if default_info:
-            default_label = f"System Default ({default_info['name']})"
-        labels.append(default_label)
-        index_by_label[default_label] = None
-        name_by_label[default_label] = ""
-        for d in devices:
-            label = f"[{d['index']}] {d['name']}"
-            labels.append(label)
-            index_by_label[label] = int(d["index"])
-            name_by_label[label] = d["name"]
-
-        current_idx = recorder.device_index
-        current_label = default_label
-        if current_idx is not None:
-            for lbl, idx in index_by_label.items():
-                if idx == current_idx:
-                    current_label = lbl
-                    break
-
-        device_var = tk.StringVar(value=current_label)
+        device_var = tk.StringVar(value=selector.selected_label)
         combo = ttk.Combobox(
             frame,
             textvariable=device_var,
-            values=labels,
+            values=selector.labels(),
             state="readonly",
             width=50,
         )
@@ -428,27 +403,65 @@ def _open_settings(
         status_msg.pack(anchor="w", pady=(0, 6))
 
         def _on_device_change(_event=None) -> None:
-            new_label = device_var.get()
-            new_idx = index_by_label.get(new_label)
+            label = device_var.get()
+            new_idx = selector.select(label)
             try:
                 recorder.set_device_index(new_idx)
-                status_msg.configure(
-                    text=f"Switched to: {new_label}", fg="#4ec959"
-                )
-                logger.info(f"输入设备已切换: {new_label}")
-                # 记住本次选择，下次启动自动恢复。
-                try:
-                    store = _settings_store()
-                    settings = store.load()
-                    settings["audio_device_name"] = name_by_label.get(new_label, "")
-                    store.save(settings)
-                except Exception:
-                    logger.exception("保存输入设备偏好失败")
+                status_msg.configure(text=f"Switched to: {label}", fg="#4ec959")
+                logger.info(f"输入设备已切换: {label}")
+                selector.persist()  # 记住本次选择，下次启动自动恢复
             except Exception as exc:
                 status_msg.configure(text=f"Failed: {exc}", fg="#e05252")
                 logger.exception(f"切换输入设备失败: {exc}")
 
+        def _apply_list() -> None:
+            # 主线程：重建后重新枚举并刷新下拉。
+            if not combo.winfo_exists():
+                return
+            recorder.rescan_devices()  # 重建 PortAudio 以发现热插拔
+            selector.refresh()
+            combo.configure(values=selector.labels())
+            device_var.set(selector.selected_label)
+
+        # 设备热插拔监听：Windows 上事件驱动，其它平台/无 comtypes 时回退到轮询。
+        # 关键约束：PortAudio 的 WASAPI 把 COM 套间绑在调用线程上，且 Tk 不是线程
+        # 安全的——所以重扫和 UI 刷新必须都在主线程。COM 回调只置一个标志位，真正
+        # 的重扫由主线程轮询循环 _poll_devices 触发，避免临时线程导致的枚举不全与
+        # 访问越界崩溃（0xC0000005）。
+        device_dirty = threading.Event()
+        watcher = audio_devices.DeviceChangeWatcher()
+        watching = watcher.start(device_dirty.set)
+
+        if watching:
+            device_dirty.set()  # 打开时刷新一次，纳入启动后插拔的设备
+
+            def _poll_devices() -> None:
+                if not combo.winfo_exists():
+                    return  # 设置窗口已关闭，停止轮询
+                if device_dirty.is_set():
+                    device_dirty.clear()
+                    _apply_list()
+                root.after(400, _poll_devices)
+
+            root.after(400, _poll_devices)
+
+            def _refresh_devices() -> None:
+                # 下拉只读缓存 → 秒开（列表由 _poll_devices 在主线程保持最新）。
+                combo.configure(values=selector.labels())
+                device_var.set(selector.selected_label)
+        else:
+            # 回退：打开下拉时在主线程同步重扫。
+            def _refresh_devices() -> None:
+                _apply_list()
+
+        combo.configure(postcommand=_refresh_devices)
         combo.bind("<<ComboboxSelected>>", _on_device_change)
+
+        # 关闭设置窗口时停止监听，释放 COM 资源。
+        win.bind(
+            "<Destroy>",
+            lambda e: watcher.stop() if e.widget is win else None,
+        )
 
         win.update_idletasks()
         w = win.winfo_width()
@@ -794,33 +807,18 @@ def main() -> None:
         "Hold left Shift+Win to record, release to transcribe and type. Use tray menu to exit."
     )
 
-    with AudioDeviceResolver() as resolver:
-        info = resolver.default_input()
-        device_index = int(info["index"]) if info else None
-
-        # 恢复上次在设置里选择的输入设备（按设备名匹配，index 不稳定）。
-        saved_name = ""
-        try:
-            saved_name = _settings_store().load().get("audio_device_name", "")
-        except Exception:
-            logger.exception("读取输入设备偏好失败")
-
-        if saved_name:
-            endpoints = resolver.list_user_endpoints() or resolver.list_inputs()
-            matched = next(
-                (d for d in endpoints if d["name"] == saved_name), None
-            )
-            if matched:
-                device_index = int(matched["index"])
-                logger.info(f"已恢复输入设备: [{matched['index']}] {saved_name}")
-            else:
-                logger.warning(f'已保存设备 "{saved_name}" 不可用，回退默认设备')
-
-        if not saved_name:
-            if info:
-                logger.info(f"默认麦克风设备: [{info['index']}] {info['name']}")
-            else:
-                logger.info("默认麦克风设备: 未知")
+    # 解析启动设备：恢复上次选择（按设备名匹配，index 不稳定），否则用系统默认。
+    # 该逻辑与设置里的 picker 共用 UI.audio_devices，避免两处重复。
+    startup = _audio_devices().resolve_startup_device()
+    device_index = startup.index
+    if startup.saved_name and startup.available:
+        logger.info(f"已恢复输入设备: [{device_index}] {startup.saved_name}")
+    elif startup.saved_name:
+        logger.warning(f'已保存设备 "{startup.saved_name}" 不可用，回退默认设备')
+    elif startup.default_name:
+        logger.info(f"默认麦克风设备: [{device_index}] {startup.default_name}")
+    else:
+        logger.info("默认麦克风设备: 未知")
 
     config = RecorderConfig()
     recorder = PushToTalkRecorder(device_index=device_index, config=config)
