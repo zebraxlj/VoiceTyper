@@ -1,6 +1,24 @@
+import sys
 from typing import Optional, Dict, Union
 
 import pyaudio as _p
+
+
+def _platform_default_hostapi() -> Optional[str]:
+    """按平台返回最贴近"系统声音面板"的 host API 名称。
+
+    Windows 声音设置里的输入设备就是 WASAPI/MMDevice 端点，故用 WASAPI 过滤
+    可与系统面板保持一致；macOS 用 Core Audio；Linux 上 host API 众多且名字
+    跨 API 不一致，返回 None 表示不按 host API 过滤（仅按名去重）。
+    """
+    if sys.platform == "win32":
+        return "Windows WASAPI"
+    if sys.platform == "darwin":
+        return "Core Audio"
+    return None
+
+
+_DEFAULT_PREFER_HOSTAPI = _platform_default_hostapi()
 
 
 class AudioDeviceResolver:
@@ -98,7 +116,7 @@ class AudioDeviceResolver:
 
     def list_user_endpoints(
         self,
-        prefer_hostapi: Optional[str] = "Windows WASAPI",
+        prefer_hostapi: Optional[str] = _DEFAULT_PREFER_HOSTAPI,
         deduplicate: bool = True,
         exclude_keywords: Optional[list[str]] = None
     ) -> list[Dict[str, Union[int, str]]]:

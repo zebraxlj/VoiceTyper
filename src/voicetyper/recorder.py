@@ -301,6 +301,32 @@ class PushToTalkRecorder:
         else:
             self._format_cache.pop(device_index, None)
 
+    def rescan_devices(self) -> bool:
+        """重建底层 PortAudio 实例，以发现热插拔（新接入/移除）的设备。
+
+        PortAudio 在进程内按引用计数初始化，设备列表只在计数 0→1 那一次枚举；
+        本录音器持有一个常驻 PyAudio 实例，因此普通的查询（新建并 terminate 一个
+        临时 PyAudio）只会复用启动时的缓存列表，看不到后续插拔。terminate 掉这个
+        常驻实例再重建，才能让 PortAudio 重新枚举。
+
+        仅在空闲（未录音、无打开的流）时执行；正在录音时返回 ``False`` 不打断。
+
+        返回：
+            bool: 成功重扫返回 True；因正在录音而跳过返回 False。
+        """
+        with self._open_lock:
+            if (self._thread and self._thread.is_alive()) or self._stream is not None:
+                return False
+            try:
+                self._pa.terminate()
+            except Exception:
+                pass
+            self._pa = pyaudio.PyAudio()
+            # 设备 index 可能随插拔变化，清掉按 index 的格式缓存以便重新协商。
+            self._format_cache.clear()
+        logger.debug("已重建 PortAudio 实例以刷新设备列表")
+        return True
+
     def close(self) -> None:
         """释放 PortAudio 资源。可安全重复调用。"""
         try:
