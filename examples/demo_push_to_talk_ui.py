@@ -1,6 +1,5 @@
 import ctypes
 import logging
-import os
 import re
 import signal
 import sys
@@ -18,10 +17,10 @@ from voicetyper import AudioDeviceResolver, PushToTalkRecorder, RecorderConfig
 from voicetyper.models import SenseVoiceSmallEngine
 from voicetyper.monitor import ResourceMonitor
 
-# 日志开关：True = 控制台显示完整格式（含日期/模块名/DEBUG），False = 简洁格式
-# 也可通过环境变量 VOICETYPER_VERBOSE=1 启用
-# VERBOSE_CONSOLE = os.getenv("VOICETYPER_VERBOSE", "0") == "1"
-VERBOSE_CONSOLE = True
+# 日志开关：True = 控制台显示完整格式（含日期/模块名/DEBUG），False = 简洁格式。
+# 仅影响开发时的控制台输出（打包后无控制台）；需要调试时手动改这一行即可。
+# 文件日志始终为 DEBUG + 完整格式，不受此开关影响。
+VERBOSE_CONSOLE = False
 
 # 配置日志：同时输出到控制台和文件
 # 开发环境：项目根目录下的 logs
