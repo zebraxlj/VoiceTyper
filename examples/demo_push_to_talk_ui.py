@@ -297,6 +297,20 @@ def _restart_as_admin() -> None:
     sys.exit(0)
 
 
+def _settings_store():
+    """Import the shared UI settings store (repo-root ``UI`` package).
+
+    The package lives at the repo root, not under ``examples/``, so make sure
+    the root is importable before pulling it in.
+    """
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from UI import settings_store
+
+    return settings_store
+
+
 def _open_settings(
     root: tk.Tk,
     exit_event: threading.Event,
@@ -372,15 +386,20 @@ def _open_settings(
 
         labels: list[str] = []
         index_by_label: dict[str, Optional[int]] = {}
+        # 持久化按设备名（而非 index）保存：重启/热插拔后 index 会变，名字更稳定。
+        # System Default 用空字符串表示，启动时回退到系统默认设备。
+        name_by_label: dict[str, str] = {}
         default_label = "System Default"
         if default_info:
             default_label = f"System Default ({default_info['name']})"
         labels.append(default_label)
         index_by_label[default_label] = None
+        name_by_label[default_label] = ""
         for d in devices:
             label = f"[{d['index']}] {d['name']}"
             labels.append(label)
             index_by_label[label] = int(d["index"])
+            name_by_label[label] = d["name"]
 
         current_idx = recorder.device_index
         current_label = default_label
@@ -418,6 +437,14 @@ def _open_settings(
                     text=f"Switched to: {new_label}", fg="#4ec959"
                 )
                 logger.info(f"输入设备已切换: {new_label}")
+                # 记住本次选择，下次启动自动恢复。
+                try:
+                    store = _settings_store()
+                    settings = store.load()
+                    settings["audio_device_name"] = name_by_label.get(new_label, "")
+                    store.save(settings)
+                except Exception:
+                    logger.exception("保存输入设备偏好失败")
             except Exception as exc:
                 status_msg.configure(text=f"Failed: {exc}", fg="#e05252")
                 logger.exception(f"切换输入设备失败: {exc}")
@@ -771,10 +798,30 @@ def main() -> None:
     with AudioDeviceResolver() as resolver:
         info = resolver.default_input()
         device_index = int(info["index"]) if info else None
-        if info:
-            logger.info(f"默认麦克风设备: [{info['index']}] {info['name']}")
-        else:
-            logger.info("默认麦克风设备: 未知")
+
+        # 恢复上次在设置里选择的输入设备（按设备名匹配，index 不稳定）。
+        saved_name = ""
+        try:
+            saved_name = _settings_store().load().get("audio_device_name", "")
+        except Exception:
+            logger.exception("读取输入设备偏好失败")
+
+        if saved_name:
+            endpoints = resolver.list_user_endpoints() or resolver.list_inputs()
+            matched = next(
+                (d for d in endpoints if d["name"] == saved_name), None
+            )
+            if matched:
+                device_index = int(matched["index"])
+                logger.info(f"已恢复输入设备: [{matched['index']}] {saved_name}")
+            else:
+                logger.warning(f'已保存设备 "{saved_name}" 不可用，回退默认设备')
+
+        if not saved_name:
+            if info:
+                logger.info(f"默认麦克风设备: [{info['index']}] {info['name']}")
+            else:
+                logger.info("默认麦克风设备: 未知")
 
     config = RecorderConfig()
     recorder = PushToTalkRecorder(device_index=device_index, config=config)
