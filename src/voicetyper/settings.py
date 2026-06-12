@@ -1,3 +1,10 @@
+"""Tiny JSON-backed settings store at ``~/.voicetyper/settings.json``.
+
+UI-agnostic and cross-platform. Used by the device picker (and reusable by the
+formal app) to persist small preferences. Reads never raise — a missing or
+corrupt file yields ``{}``.
+"""
+
 import json
 from pathlib import Path
 from typing import Any
@@ -16,4 +23,6 @@ def load() -> dict[str, Any]:
 
 def save(data: dict[str, Any]) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    SETTINGS_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )

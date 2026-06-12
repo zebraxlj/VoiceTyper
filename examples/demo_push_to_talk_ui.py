@@ -14,6 +14,7 @@ from typing import Optional
 from pynput import keyboard as pynput_keyboard
 
 from voicetyper import PushToTalkRecorder, RecorderConfig
+from voicetyper import devices, device_watch
 from voicetyper.models import SenseVoiceSmallEngine
 from voicetyper.monitor import ResourceMonitor
 
@@ -296,20 +297,6 @@ def _restart_as_admin() -> None:
     sys.exit(0)
 
 
-def _audio_devices():
-    """Import the UI-agnostic input-device model (repo-root ``UI`` package).
-
-    The package lives at the repo root, not under ``examples/``, so make sure
-    the root is importable before pulling it in.
-    """
-    repo_root = str(Path(__file__).resolve().parent.parent)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    from UI import audio_devices
-
-    return audio_devices
-
-
 def _open_settings(
     root: tk.Tk,
     exit_event: threading.Event,
@@ -377,10 +364,9 @@ def _open_settings(
             bg="#1e1e1e",
         ).pack(anchor="w", pady=(4, 4))
 
-        # UI 无关的设备选择逻辑（枚举/持久化/断开重连）都在 UI.audio_devices 里；
+        # UI 无关的设备选择逻辑（枚举/持久化/断开重连）都在 voicetyper.devices 里；
         # 这里只负责渲染成 Combobox 并把"何时刷新"接上去。正式 UI 可复用同一套。
-        audio_devices = _audio_devices()
-        selector = audio_devices.InputDeviceSelector()
+        selector = devices.InputDeviceSelector()
         selector.select_by_index(recorder.device_index)
 
         device_var = tk.StringVar(value=selector.selected_label)
@@ -429,7 +415,7 @@ def _open_settings(
         # 的重扫由主线程轮询循环 _poll_devices 触发，避免临时线程导致的枚举不全与
         # 访问越界崩溃（0xC0000005）。
         device_dirty = threading.Event()
-        watcher = audio_devices.DeviceChangeWatcher()
+        watcher = device_watch.DeviceChangeWatcher()
         watching = watcher.start(device_dirty.set)
 
         if watching:
@@ -808,8 +794,8 @@ def main() -> None:
     )
 
     # 解析启动设备：恢复上次选择（按设备名匹配，index 不稳定），否则用系统默认。
-    # 该逻辑与设置里的 picker 共用 UI.audio_devices，避免两处重复。
-    startup = _audio_devices().resolve_startup_device()
+    # 该逻辑与设置里的 picker 共用 voicetyper.devices，避免两处重复。
+    startup = devices.resolve_startup_device()
     device_index = startup.index
     if startup.saved_name and startup.available:
         logger.info(f"已恢复输入设备: [{device_index}] {startup.saved_name}")
