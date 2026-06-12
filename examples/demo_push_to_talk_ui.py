@@ -469,6 +469,7 @@ def _start_tray_icon(
     tk_root: tk.Tk,
     exit_event: threading.Event,
     recorder: "PushToTalkRecorder",
+    session: "PushToTalkSession",
 ):
     # Windows-only tray icon with a simple "Exit" menu.
     if sys.platform != "win32":
@@ -480,7 +481,7 @@ def _start_tray_icon(
         logger.warning(f"Tray icon unavailable (pystray/Pillow not installed): {exc}")
         return False, None
 
-    def _load_icon(admin: bool = False):
+    def _load_icon(admin: bool = False, paused: bool = False):
         icon_path = _resource_path("UI/assets/IconTaskTray.png")
         if icon_path.exists():
             base = Image.open(icon_path).convert("RGBA")
@@ -512,10 +513,55 @@ def _start_tray_icon(
                 (x0, y0, x1, y1),
                 fill=(78, 201, 89, 255),
             )
+        if paused:
+            # 右下角圆形黄色徽标 + 内嵌"‖"，与 admin 绿点同位但更大；不遮挡原 icon 主体。
+            w, h = base.size
+            r = max(6, min(w, h) // 3)         # 半径取图标短边 1/3，醒目但不压制图案
+            margin = max(1, r // 5)
+            x1, y1 = w - margin, h - margin
+            x0, y0 = x1 - 2 * r, y1 - 2 * r
+            yellow = (255, 204, 0, 255)
+            outline = (0, 0, 0, 255)
+            draw = ImageDraw.Draw(base)
+            # 黑色描边底，避免与浅色任务栏融成一片。
+            draw.ellipse(
+                (x0 - 1, y0 - 1, x1 + 1, y1 + 1),
+                fill=outline,
+            )
+            draw.ellipse((x0, y0, x1, y1), fill=yellow)
+            # 圆内黑色暂停双竖条。
+            cx = (x0 + x1) // 2
+            cy = (y0 + y1) // 2
+            bar_w = max(1, r // 4)
+            bar_h = int(r * 0.95)
+            gap = max(1, r // 3)
+            draw.rectangle(
+                (cx - gap // 2 - bar_w, cy - bar_h // 2,
+                 cx - gap // 2,         cy + bar_h // 2),
+                fill=outline,
+            )
+            draw.rectangle(
+                (cx + gap // 2,         cy - bar_h // 2,
+                 cx + gap // 2 + bar_w, cy + bar_h // 2),
+                fill=outline,
+            )
         return base
 
     def _on_settings(icon, item):
         _open_settings(tk_root, exit_event, recorder)
+
+    def _on_pause(icon, item):
+        # 切换暂停状态；菜单项的 checked 回调会读取最新状态自动刷新勾选标记。
+        if session.is_paused():
+            session.resume()
+        else:
+            session.pause()
+        # 同步刷新菜单勾选 + 托盘图标（暂停时叠加黄色 ‖ 标识）。
+        icon.icon = _load_icon(admin=is_admin, paused=session.is_paused())
+        icon.title = (
+            f"{title} — Paused" if session.is_paused() else title
+        )
+        icon.update_menu()
 
     def _on_exit(icon, item):
         exit_event.set()
@@ -529,6 +575,11 @@ def _start_tray_icon(
             _load_icon(admin=is_admin),
             title,
             menu=pystray.Menu(
+                pystray.MenuItem(
+                    "Pause (disable hotkey)",
+                    _on_pause,
+                    checked=lambda item: session.is_paused(),
+                ),
                 pystray.MenuItem("Settings", _on_settings),
                 pystray.MenuItem("Exit", _on_exit),
             ),
@@ -572,6 +623,42 @@ class PushToTalkSession:
         self._last_down_time = 0.0
         self._record_start_time = 0.0
         self._start_timer: Optional[threading.Timer] = None
+        self._paused = False
+
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def pause(self) -> None:
+        # 暂停热键监听：开发版与打包版可同时运行，避免双触发。
+        # 若正在录音/计时，立刻终止；按键状态清零，避免恢复后误触发。
+        with self._state_lock:
+            if self._paused:
+                return
+            self._paused = True
+            if self._start_timer and self._start_timer.is_alive():
+                try:
+                    self._start_timer.cancel()
+                except Exception:
+                    pass
+                self._start_timer = None
+            was_recording = self._recording
+            self._recording = False
+            self._shift_down = False
+            self._win_down = False
+        if was_recording:
+            try:
+                self._recorder.stop()
+            except Exception as exc:
+                logger.exception(f"暂停时停止录音失败: {exc}")
+            self._ui.hide()
+        logger.info("热键已暂停")
+
+    def resume(self) -> None:
+        with self._state_lock:
+            if not self._paused:
+                return
+            self._paused = False
+        logger.info("热键已恢复")
 
     def load_model(self) -> None:
         try:
@@ -673,6 +760,8 @@ class PushToTalkSession:
                 logger.exception(f"输入文本失败: {exc}")
 
     def on_press(self, key) -> None:
+        if self._paused:
+            return
         try:
             if key == pynput_keyboard.Key.shift_l:
                 if self._shift_down:
@@ -703,6 +792,8 @@ class PushToTalkSession:
             logger.exception(f"按键处理异常: {exc}")
 
     def on_release(self, key):
+        if self._paused:
+            return True
         try:
             if key == pynput_keyboard.Key.shift_l:
                 self._shift_down = False
@@ -818,12 +909,6 @@ def main() -> None:
     # 摊到模型加载/UI 初始化的等待里，避免开头丢音。
     recorder.probe_format(async_=True)
     ui = OverlayUI()
-    tray_ok, tray_icon = _start_tray_icon(ui._root, exit_event, recorder)
-    if not tray_ok:
-        logger.error("Tray icon unavailable on Windows; aborting startup.")
-        recorder.close()
-        return
-
     session = PushToTalkSession(
         ui=ui,
         recorder=recorder,
@@ -832,6 +917,12 @@ def main() -> None:
         hold_s=max(0.0, hold_ms / 1000.0),
         strip_trailing_period=strip_trailing_period,
     )
+    tray_ok, tray_icon = _start_tray_icon(ui._root, exit_event, recorder, session)
+    if not tray_ok:
+        logger.error("Tray icon unavailable on Windows; aborting startup.")
+        recorder.close()
+        return
+
     session.run(tray_icon=tray_icon)
 
 
