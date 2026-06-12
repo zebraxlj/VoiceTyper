@@ -97,6 +97,16 @@ class InputDeviceSelector:
         entry = self._entry_for_label(self.selected_label)
         return entry is not None and not entry.available
 
+    @property
+    def selected_index(self) -> Optional[int]:
+        """当前选中项对齐后的设备 index（默认/已断开为 None）。
+
+        ``refresh()`` 按设备名重新对齐后，可用它把漂移过的 index 回写给录音器，
+        否则录音器仍持旧 index，下次开流会打开错位/失效的设备。
+        """
+        entry = self._entry_for_label(self.selected_label)
+        return entry.index if entry else None
+
     # ── selection ─────────────────────────────────────────────
     def select(self, label: str) -> Optional[int]:
         """Mark ``label`` as the current selection; return its device index.

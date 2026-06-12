@@ -404,10 +404,16 @@ def _open_settings(
             # 主线程：重建后重新枚举并刷新下拉。
             if not combo.winfo_exists():
                 return
-            recorder.rescan_devices()  # 重建 PortAudio 以发现热插拔
+            rescanned = recorder.rescan_devices()  # 重建 PortAudio 以发现热插拔
             selector.refresh()
             combo.configure(values=selector.labels())
             device_var.set(selector.selected_label)
+            # 重扫后底层 index 可能漂移（被拔设备在列表中靠前时尤甚）；把 selector
+            # 按名称对齐后的最新 index 同步回 recorder，否则 recorder 仍用旧 index，
+            # 下次 start() 会打开错位/失效的设备而报 -9998。录音中 rescan 会返回
+            # False（不重建、index 不漂移），此时用返回值门控跳过回写。
+            if rescanned and selector.selected_index != recorder.device_index:
+                recorder.set_device_index(selector.selected_index)
 
         # 设备热插拔监听：Windows 上事件驱动，其它平台/无 comtypes 时回退到轮询。
         # 关键约束：PortAudio 的 WASAPI 把 COM 套间绑在调用线程上，且 Tk 不是线程
