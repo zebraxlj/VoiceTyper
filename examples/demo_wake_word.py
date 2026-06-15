@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--keywords",
         type=str,
-        default="转文字",
+        default="转文字,听写,Jarvis,Jvis,Javis",
         help="唤醒关键词，逗号分隔多个（默认：转文字）",
     )
     parser.add_argument(
