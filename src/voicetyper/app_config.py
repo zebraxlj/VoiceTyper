@@ -50,6 +50,12 @@ class AppConfig:
     show_resource_usage: bool = False
     """Spawn :class:`voicetyper.monitor.ResourceMonitor` to log CPU/RAM/GPU."""
 
+    log_dir: str = ""
+    """Custom log directory. Empty = use the app's default location.
+
+    Read once at startup; changing it takes effect only after a restart.
+    """
+
     def hotkey_obj(self) -> Hotkey:
         """Parse :attr:`hotkey` into a :class:`Hotkey`, falling back to default on error."""
         try:
@@ -77,6 +83,7 @@ class AppConfig:
             strip_trailing_period=bool(self.strip_trailing_period),
             verbose_console=bool(self.verbose_console),
             show_resource_usage=bool(self.show_resource_usage),
+            log_dir=str(self.log_dir or "").strip(),
         )
 
 
