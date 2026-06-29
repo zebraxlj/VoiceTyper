@@ -1,14 +1,17 @@
 import ctypes
 import logging
+import os
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+from dataclasses import replace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, ttk
 from typing import Any, Optional
 
 from pynput import keyboard as pynput_keyboard
@@ -24,13 +27,23 @@ from voicetyper.monitor import ResourceMonitor
 _BOOT_CFG = load_app_config()
 
 # 配置日志：同时输出到控制台和文件
-# 开发环境：项目根目录下的 logs
-# 打包后的 exe：exe 所在目录下的 logs
-if getattr(sys, "frozen", False):
-    log_dir = Path(sys.executable).parent / "logs"
-else:
-    log_dir = Path(__file__).resolve().parent.parent / "logs"
-log_dir.mkdir(exist_ok=True)
+# 优先用配置里的自定义目录；为空则回退默认：
+#   开发环境 → 项目根目录下的 logs；打包后的 exe → exe 所在目录下的 logs
+def _default_log_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "logs"
+    return Path(__file__).resolve().parent.parent / "logs"
+
+
+_log_dir_warning: Optional[str] = None
+log_dir = Path(_BOOT_CFG.log_dir) if _BOOT_CFG.log_dir else _default_log_dir()
+try:
+    log_dir.mkdir(parents=True, exist_ok=True)
+except Exception as exc:
+    # 自定义目录不可用（路径非法/无权限等）→ 回退默认，启动后补记一条 warning。
+    _log_dir_warning = f"无法使用配置的日志目录 {log_dir} ({exc})，已回退默认目录"
+    log_dir = _default_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
 log_file = log_dir / "voicetyper.log"
 
 # 完整格式（含日期、毫秒、模块名）
@@ -58,6 +71,9 @@ console_handler.setFormatter(_VERBOSE_FMT if _BOOT_CFG.verbose_console else _SIM
 
 logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, console_handler])
 logger = logging.getLogger("voicetyper.app")
+
+if _log_dir_warning:
+    logger.warning(_log_dir_warning)
 
 
 def _resource_path(relative: str) -> Path:
@@ -293,6 +309,39 @@ def _restart_as_admin() -> None:
         None, "runas", executable, params, None, 1
     )
     sys.exit(0)
+
+
+def _restart() -> None:
+    """Relaunch the current script/exe at the SAME privilege level.
+
+    用 "open" 动词重启：子进程默认继承父进程的权限令牌——父进程已提权则子进程
+    也提权，未提权则保持未提权。因此「保持当前权限」无需额外判断。与
+    _restart_as_admin（始终用 "runas" 提权）语义上正交。
+    """
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        params = " ".join(sys.argv[1:])
+    else:
+        executable = sys.executable
+        params = " ".join([f'"{sys.argv[0]}"'] + sys.argv[1:])
+
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "open", executable, params, None, 1
+    )
+    sys.exit(0)
+
+
+def _open_folder(path: Path) -> None:
+    """Open a folder in the OS file manager (best-effort, cross-platform)."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception as exc:
+        logger.exception(f"打开文件夹失败 ({path}): {exc}")
 
 
 def _capture_hotkey(parent: tk.Misc) -> Optional[str]:
@@ -547,13 +596,12 @@ def _build_hotkey_section(
         except ValueError:
             apply_status.configure(text="Hold debounce must be an integer (ms).", fg="#e05252")
             return
-        new_cfg = AppConfig(
+        # 重新读盘再覆盖本区字段，避免覆盖掉别处（如 Logging 区）刚保存的设置。
+        new_cfg = replace(
+            load_app_config(),
             hotkey=win._hotkey_serial,  # type: ignore[attr-defined]
             mode=mode_var.get(),
             hold_ms=hold_ms_val,
-            strip_trailing_period=cfg.strip_trailing_period,
-            verbose_console=cfg.verbose_console,
-            show_resource_usage=cfg.show_resource_usage,
         ).normalized()
         save_app_config(new_cfg)
         session.update_config(new_cfg)
@@ -732,6 +780,81 @@ def _open_settings(
             lambda e: watcher.stop() if e.widget is win else None,
         )
 
+        # ── Logging ──────────────────────────────────────────
+        tk.Label(
+            frame,
+            text="Logging",
+            font=("Segoe UI", 10, "bold"),
+            fg="#cccccc",
+            bg="#1e1e1e",
+        ).pack(anchor="w", pady=(12, 4))
+
+        log_cfg = load_app_config()
+        log_row = tk.Frame(frame, bg="#1e1e1e")
+        log_row.pack(anchor="w", pady=(0, 4), fill="x")
+        # 预填当前生效目录（log_dir 为模块级解析后的真实路径）；留空保存即回退默认。
+        log_var = tk.StringVar(value=log_cfg.log_dir or str(log_dir))
+        log_entry = tk.Entry(log_row, textvariable=log_var, width=44, font=("Segoe UI", 10))
+        log_entry.pack(side="left")
+
+        def _browse_log_dir() -> None:
+            chosen = filedialog.askdirectory(
+                parent=win,
+                title="Select log folder",
+                initialdir=log_var.get() or str(log_dir),
+            )
+            if chosen:
+                log_var.set(chosen)
+
+        tk.Button(
+            log_row,
+            text="Browse…",
+            font=("Segoe UI", 9),
+            command=_browse_log_dir,
+        ).pack(side="left", padx=(6, 0))
+
+        tk.Label(
+            frame,
+            text="Leave empty to use the default location. Takes effect after restart.",
+            font=("Segoe UI", 9),
+            fg="#999999",
+            bg="#1e1e1e",
+        ).pack(anchor="w", pady=(0, 6))
+
+        log_status = tk.Label(
+            frame,
+            text="",
+            font=("Segoe UI", 9),
+            fg="#999999",
+            bg="#1e1e1e",
+        )
+
+        def _save_log_dir() -> None:
+            # 重新读盘再覆盖 log_dir，避免覆盖掉别处刚保存的设置。
+            new_cfg = replace(load_app_config(), log_dir=log_var.get().strip()).normalized()
+            save_app_config(new_cfg)
+            target = new_cfg.log_dir or "(default)"
+            log_status.configure(
+                text=f"Saved: {target} — restart to apply", fg="#4ec959"
+            )
+            logger.info(f"日志目录已保存: {new_cfg.log_dir or '默认'}（重启后生效）")
+
+        log_btns = tk.Frame(frame, bg="#1e1e1e")
+        log_btns.pack(anchor="w", pady=(0, 4))
+        tk.Button(
+            log_btns,
+            text="Open Folder",
+            font=("Segoe UI", 9),
+            command=lambda: _open_folder(log_dir),
+        ).pack(side="left")
+        tk.Button(
+            log_btns,
+            text="Save",
+            font=("Segoe UI", 9),
+            command=_save_log_dir,
+        ).pack(side="left", padx=(6, 0))
+        log_status.pack(anchor="w", pady=(0, 8))
+
         win.update_idletasks()
         w = win.winfo_width()
         h = win.winfo_height()
@@ -840,6 +963,12 @@ def _start_tray_icon(
         )
         icon.update_menu()
 
+    def _on_restart(icon, item):
+        # 同权限重启：先收尾（停监听/录音/托盘），再以相同权限重新拉起进程。
+        exit_event.set()
+        icon.stop()
+        _restart()
+
     def _on_exit(icon, item):
         exit_event.set()
         icon.stop()
@@ -858,6 +987,7 @@ def _start_tray_icon(
                     checked=lambda item: session.is_paused(),
                 ),
                 pystray.MenuItem("Settings", _on_settings),
+                pystray.MenuItem("Restart", _on_restart),
                 pystray.MenuItem("Exit", _on_exit),
             ),
         )
