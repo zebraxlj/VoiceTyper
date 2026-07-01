@@ -1,3 +1,4 @@
+import argparse
 import ctypes
 import logging
 import os
@@ -17,7 +18,7 @@ from typing import Any, Optional
 from pynput import keyboard as pynput_keyboard
 
 from voicetyper import PushToTalkRecorder, RecorderConfig
-from voicetyper import devices, device_watch
+from voicetyper import autostart, devices, device_watch
 from voicetyper.app_config import AppConfig, MODE_HOLD, MODE_TOGGLE, load as load_app_config, save as save_app_config
 from voicetyper.hotkey import PRESETS as HOTKEY_PRESETS, Hotkey
 from voicetyper.models import SenseVoiceSmallEngine
@@ -329,6 +330,20 @@ def _restart() -> None:
         None, "open", executable, params, None, 1
     )
     sys.exit(0)
+
+
+def _current_launch_command() -> str:
+    """Build the command line to register for autostart at logon.
+
+    Mirrors :func:`_restart`'s frozen/source split, but constructs a *fresh*
+    command (it ignores the current process's argv) so re-enabling never
+    double-appends flags. Paths are absolute because logon launches with a
+    system cwd. Always appends ``--tray`` — currently a reserved no-op flag, so
+    existing autostart entries pick up future tray behavior without re-registering.
+    """
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" --tray'
+    return f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}" --tray'
 
 
 def _open_folder(path: Path) -> None:
@@ -855,6 +870,72 @@ def _open_settings(
         ).pack(side="left", padx=(6, 0))
         log_status.pack(anchor="w", pady=(0, 8))
 
+        # ── Startup ──────────────────────────────────────────
+        # 开机自启动。注册表 HKCU\Run 是唯一真相：勾选状态直接读注册表，避免与
+        # settings.json 漂移。写入普通权限（登录时不走 UAC 提权）。
+        tk.Label(
+            frame,
+            text="Startup",
+            font=("Segoe UI", 10, "bold"),
+            fg="#cccccc",
+            bg="#1e1e1e",
+        ).pack(anchor="w", pady=(12, 4))
+
+        autostart_supported = autostart.is_supported()
+        autostart_var = tk.BooleanVar(value=autostart.is_enabled())
+        autostart_status = tk.Label(
+            frame,
+            text="",
+            font=("Segoe UI", 9),
+            fg="#999999",
+            bg="#1e1e1e",
+        )
+
+        def _on_autostart_toggle() -> None:
+            try:
+                if autostart_var.get():
+                    cmd = _current_launch_command()
+                    autostart.enable(cmd)
+                    autostart_status.configure(
+                        text="Enabled — VoiceTyper will start with Windows.", fg="#4ec959"
+                    )
+                    logger.info(f"已开启开机启动: {cmd}")
+                else:
+                    autostart.disable()
+                    autostart_status.configure(text="Disabled.", fg="#999999")
+                    logger.info("已关闭开机启动")
+            except Exception as exc:
+                # 回滚勾选状态，避免 UI 与注册表实际状态不一致。
+                autostart_var.set(autostart.is_enabled())
+                autostart_status.configure(text=f"Failed: {exc}", fg="#e05252")
+                logger.exception(f"切换开机启动失败: {exc}")
+
+        tk.Checkbutton(
+            frame,
+            text="Start VoiceTyper when Windows starts",
+            variable=autostart_var,
+            command=_on_autostart_toggle,
+            font=("Segoe UI", 10),
+            fg="#cccccc",
+            bg="#1e1e1e",
+            selectcolor="#1e1e1e",
+            activebackground="#1e1e1e",
+            activeforeground="#ffffff",
+            state="normal" if autostart_supported else "disabled",
+        ).pack(anchor="w")
+        tk.Label(
+            frame,
+            text=(
+                "Runs at logon with normal privileges (no admin)."
+                if autostart_supported
+                else "Autostart is only available on Windows."
+            ),
+            font=("Segoe UI", 9),
+            fg="#999999",
+            bg="#1e1e1e",
+        ).pack(anchor="w", pady=(0, 4))
+        autostart_status.pack(anchor="w", pady=(0, 8))
+
         win.update_idletasks()
         w = win.winfo_width()
         h = win.winfo_height()
@@ -1356,6 +1437,17 @@ class PushToTalkSession:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="VoiceTyper push-to-talk (UI)")
+    # 预留标志：开机自启动注册的命令里带 --tray。当前应用已是托盘优先（无主窗口
+    # 可抑制），故此标志暂为 no-op，仅为将来分化启动行为占位。
+    parser.add_argument(
+        "--tray",
+        action="store_true",
+        help="Reserved: launch straight to tray (currently a no-op; app is already tray-first).",
+    )
+    args, _ = parser.parse_known_args()
+    _ = args.tray  # reserved for future use
+
     app_cfg = load_app_config()
     exit_event = threading.Event()
 
